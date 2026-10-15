@@ -1,0 +1,17 @@
+.env
+.git
+.gitignore
+.venv
+.pytest_cache
+.research
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+data
+logs
+tests
+accaunts.txt
+image.png
+name.txt
+description.txt
+*.ps1

@@ -1,0 +1,41 @@
+services:
+  playerok-bot:
+    profiles: ["standalone"]
+    container_name: playerok-bot
+    image: car-parking-playerok-bot:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      ACCOUNTS_FILE: /inventory/accaunts.txt
+      DATABASE_PATH: /app/data/playerok_bot.sqlite3
+      LOG_PATH: /app/logs/playerok_bot.log
+    volumes:
+      # Монтируется каталог: замена файла редактором тоже видна контейнеру.
+      - ./:/inventory:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    stop_grace_period: 20s
+
+  telegram-bot:
+    # Один Telegram-хост запускает отдельный процесс Playerok + FunPay для каждого продавца.
+    container_name: playerok-telegram-bot
+    image: car-parking-playerok-bot:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      TELEGRAM_DATA_DIR: /app/data/telegram
+      DATABASE_PATH: /app/data/playerok_bot.sqlite3
+    volumes:
+      - ./data:/app/data
+    command: ["telegram"]
+    stop_grace_period: 30s
