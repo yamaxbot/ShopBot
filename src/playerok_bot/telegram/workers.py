@@ -57,8 +57,8 @@ def worker_environment(profile: Profile, directory: Path) -> dict[str, str]:
         "SHOP_GROUP_ID": str(profile.group_id),
         "SHOP_PLAYEROK_FEE": str(config.get('playerok_fee', 0)),
         "SHOP_FUNPAY_FEE": str(config.get('funpay_fee', 0)),
-        "SHOP_PLAYEROK_WITHDRAWAL": str(config.get('playerok_withdrawal', 3)),
-        "SHOP_FUNPAY_WITHDRAWAL": str(config.get('funpay_withdrawal', 6)),
+        "SHOP_PLAYEROK_WITHDRAWAL": str(config.get('playerok_withdrawal', 6)),
+        "SHOP_FUNPAY_WITHDRAWAL": str(config.get('funpay_withdrawal', 3)),
     })
     for index, item in enumerate(items[1:], 2):
         environment[f"PLAYEROK_ITEM_{index}"] = item

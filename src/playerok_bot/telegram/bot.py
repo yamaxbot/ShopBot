@@ -68,7 +68,7 @@ def commands_text():
         "/daily [ГГГГ-ММ-ДД] — статистика выбранной группы за день с листанием.\n"
         "/daily all [ГГГГ-ММ-ДД] — день по всем группам.\n"
         "/allstats — статистика всех групп за всё время.\n"
-        "/fees — ставки; /fees playerok 0 3 или /fees funpay 0 6 (продажа%, вывод%).\n"
+        "/fees — ставки; /fees playerok 0 6 или /fees funpay 0 3 (продажа%, вывод%).\n"
         "/bump_status — таймеры и ошибки поднятий Playerok.\n"
         "/settings — ваши подключения и настройки.\n"
         "/add — как добавить аккаунты; можно сразу /add логин:пароль. Сообщения и .txt также принимаются без команды.\n"
@@ -243,7 +243,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         if not parts:
             await reply(message, f'Группа «{group.group_name}»\n' + '\n'.join(
                 f"{platform}: продажа {group.config[platform + '_fee']}%, вывод {group.config[platform + '_withdrawal']}%"
-                for platform in ('playerok', 'funpay')) + '\nНастроить: /fees playerok 0 3 или /fees funpay 0 6. Ставки сохраняются для новых продаж; старые записи не пересчитываются.')
+                for platform in ('playerok', 'funpay')) + '\nНастроить: /fees playerok 0 6 или /fees funpay 0 3. Ставки сохраняются для новых продаж; старые записи не пересчитываются.')
             return
         try:
             if len(parts) != 3 or parts[0] not in {'playerok', 'funpay'}:
@@ -253,7 +253,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             profiles.update(message.from_user.id, **{parts[0] + '_fee': sale / 100, parts[0] + '_withdrawal': withdrawal / 100})
             await reply(message, 'Ставки сохранены для новых продаж выбранной группы. Выполните /run.')
         except ValueError:
-            await reply(message, 'Формат: /fees playerok 0 3 или /fees funpay 0 6. Проценты от 0 до 100.')
+            await reply(message, 'Формат: /fees playerok 0 6 или /fees funpay 0 3. Проценты от 0 до 100.')
 
     @router.message(Command('allstats', 'daily'))
     async def financial_report(message: Message, state: FSMContext, command: CommandObject):

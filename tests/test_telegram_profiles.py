@@ -247,8 +247,8 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert '01.10.2026' in session.responses[-1][1]
             await send(101, '/allstats')
             assert 'Все группы' in session.responses[-1][1]
-            await send(101, '/fees funpay 0 6')
-            assert profiles.get(101).config['funpay_withdrawal'] == 6
+            await send(101, '/fees funpay 0 3')
+            assert profiles.get(101).config['funpay_withdrawal'] == 3
         finally:
             await bot.session.close()
             await dispatcher.storage.close()

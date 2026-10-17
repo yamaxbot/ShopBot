@@ -78,6 +78,15 @@ class Profiles:
         with self.connection:
             self.connection.execute("INSERT OR IGNORE INTO product_groups SELECT user_id,1,'Основная',config,enabled,last_notified FROM profiles")
             self.connection.execute("INSERT OR IGNORE INTO selected_groups SELECT user_id,1 FROM profiles")
+            # Исправление перепутанных исходных ставок; пользовательские пары сохраняем.
+            for row in self.connection.execute('SELECT user_id,group_id,config FROM product_groups').fetchall():
+                config = json.loads(self.cipher.decrypt(row['config']).decode())
+                if config.get('withdrawal_defaults_revision', 0) < 2:
+                    if (config.get('playerok_withdrawal'), config.get('funpay_withdrawal')) == (3, 6):
+                        config.update(playerok_withdrawal=6, funpay_withdrawal=3)
+                    config['withdrawal_defaults_revision'] = 2
+                    self.connection.execute('UPDATE product_groups SET config=? WHERE user_id=? AND group_id=?',
+                                            (self._encode(config), row['user_id'], row['group_id']))
 
     def close(self):
         self.connection.close()
@@ -110,7 +119,7 @@ class Profiles:
         return {"cookies": "", "user_agent": "", "items": [], "price_limit": 50, "bump": True,
                 "funpay_key": "", "funpay_agent": "", "funpay_items": [],
                 "playerok_fee": 0, "funpay_fee": 0,
-                "playerok_withdrawal": 3, "funpay_withdrawal": 6}
+                "playerok_withdrawal": 6, "funpay_withdrawal": 3, "withdrawal_defaults_revision": 2}
 
     def get(self, user_id: int, group_id: int | None = None) -> Profile:
         self.validate_user_id(user_id)

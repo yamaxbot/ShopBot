@@ -59,7 +59,7 @@ class Finance:
                occurred_at=None, status='paid'):
         stamp, observed = normalize_time(occurred_at)
         fee = rate(os.environ.get(f'SHOP_{platform.upper()}_FEE', '0'))
-        withdrawal = rate(os.environ.get(f'SHOP_{platform.upper()}_WITHDRAWAL', '3' if platform == 'playerok' else '6'))
+        withdrawal = rate(os.environ.get(f'SHOP_{platform.upper()}_WITHDRAWAL', '6' if platform == 'playerok' else '3'))
         with self.storage._transaction() as db:
             db.execute('''INSERT INTO revenue VALUES (?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(platform,order_id) DO UPDATE SET

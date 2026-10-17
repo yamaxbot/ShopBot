@@ -95,22 +95,22 @@ def test_financial_snapshots_daily_boundary_refunds_and_multiple_accounts(tmp_pa
     storage = Storage(tmp_path / 'db.sqlite3')
     finance = Finance(storage)
     monkeypatch.setenv('SHOP_PLAYEROK_FEE', '0')
-    monkeypatch.setenv('SHOP_PLAYEROK_WITHDRAWAL', '3')
+    monkeypatch.setenv('SHOP_PLAYEROK_WITHDRAWAL', '6')
     monkeypatch.setenv('SHOP_FUNPAY_FEE', '0')
-    monkeypatch.setenv('SHOP_FUNPAY_WITHDRAWAL', '6')
+    monkeypatch.setenv('SHOP_FUNPAY_WITHDRAWAL', '3')
     try:
         finance.record('playerok', 'a', gross='100.00', occurred_at='2026-10-16T20:59:59Z')
         finance.record('funpay', 'b', 5, gross='200.00', currency='RUB', occurred_at='2026-10-16T21:00:00Z', status='closed')
         finance.record('funpay', 'b', 5, gross='200.00', currency='RUB', occurred_at='2026-10-16T21:00:00Z', status='closed')
-        assert finance.report(date(2026, 10, 16))['payout'] == 9700
+        assert finance.report(date(2026, 10, 16))['payout'] == 9400
         daily = finance.report(date(2026, 10, 17))
         assert daily['accounts'] == 5 and daily['orders'] == 1
-        assert daily['payout'] == 18800
+        assert daily['payout'] == 19400
         monkeypatch.setenv('SHOP_FUNPAY_WITHDRAWAL', '20')
         finance.record('funpay', 'b', 5, gross=999, status='closed')
-        assert finance.report()['payout'] == 28500
+        assert finance.report()['payout'] == 28800
         finance.record('funpay', 'b', 5, status='refunded')
-        assert finance.report()['payout'] == 9700
+        assert finance.report()['payout'] == 9400
         assert finance.report()['refunds'] == 1
         finance.record('playerok', 'a', status='partially_refunded')
         assert finance.report()['unknown'] == 1
@@ -160,3 +160,23 @@ def test_reports_sum_only_owners_groups_and_buttons_pin_group(tmp_path):
         assert all(b.callback_data.startswith(f'report:101:{group.group_id}:') for row in markup.inline_keyboard for b in row)
     finally:
         profiles.close()
+
+def test_corrected_withdrawal_defaults_migrate_once(tmp_path):
+    profiles = Profiles(tmp_path)
+    profile = profiles.get(101)
+    assert profile.config['playerok_withdrawal'] == 6
+    assert profile.config['funpay_withdrawal'] == 3
+    config = {**profile.config, 'playerok_withdrawal': 3, 'funpay_withdrawal': 6}
+    config.pop('withdrawal_defaults_revision')
+    with profiles.connection:
+        profiles.connection.execute('UPDATE product_groups SET config=? WHERE user_id=101', (profiles._encode(config),))
+    profiles.close()
+    profiles = Profiles(tmp_path)
+    assert profiles.get(101).config['playerok_withdrawal'] == 6
+    assert profiles.get(101).config['funpay_withdrawal'] == 3
+    profiles.update(101, playerok_withdrawal=3, funpay_withdrawal=6)
+    profiles.close()
+    profiles = Profiles(tmp_path)
+    assert profiles.get(101).config['playerok_withdrawal'] == 3
+    assert profiles.get(101).config['funpay_withdrawal'] == 6
+    profiles.close()
