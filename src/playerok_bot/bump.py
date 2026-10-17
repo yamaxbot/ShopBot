@@ -27,38 +27,46 @@ class BumpService:
         self.gateway = gateway
 
     def check_due(self, now: datetime | None = None) -> None:
+        reason = self._check_due(now)
+        self.storage.set_state_text('bump_status:' + self.gateway.item_id, reason)
+        self.storage.set_state_text('bump_error:' + self.gateway.item_id, '')
+
+    def _check_due(self, now: datetime | None = None) -> str:
         if not self.settings.auto_bump_enabled:
-            return
+            return 'Поднятия выключены: /bump on'
         clock = (lambda: now) if now is not None else (lambda: datetime.now(timezone.utc))
         current = clock()
         if not bump_time_allowed(current):
-            return
+            return 'Ожидание 12:00 МСК; ночью поднятия отключены'
         item_id = self.gateway.item_id
         baseline = self.storage.bump_baseline(item_id, current.timestamp())
         if current.timestamp() - baseline < self.settings.auto_bump_seconds:
-            return
+            due = datetime.fromtimestamp(baseline + self.settings.auto_bump_seconds, MOSCOW)
+            if due.hour < 12:
+                due = due.replace(hour=12, minute=0, second=0)
+            return 'Следующее поднятие не раньше ' + due.strftime('%d.%m %H:%M МСК')
         listed = self.storage.get_listed_account(item_id)
         if (
             listed is None
             or self.storage.unfinished_deals(item_id)
             or self.storage.pending_restock(item_id)
         ):
-            return
+            return 'Ожидание привязки аккаунта или завершения продажи/пополнения'
         if not self.gateway.delivery_matches(listed.credential):
             raise ListingValidationError(f"Данные лота {item_id} изменены; плановое поднятие отменено")
         plan = self.gateway.plan_premium_bump()
         if plan is None:
-            return
+            return 'Объявление сейчас не активно на Playerok'
         priority_id, price = plan
         # Запрос цены мог закончиться уже после полуночи.
         current = clock()
         if not bump_time_allowed(current):
-            return
+            return 'Ожидание 12:00 МСК; ночью поднятия отключены'
         operation_id = self.storage.claim_bump(
             item_id, current.timestamp(), self.settings.auto_bump_seconds, price
         )
         if operation_id is None:
-            return
+            return 'Таймер или состояние лота изменились; повторная проверка в следующем цикле'
         local = current.astimezone(MOSCOW)
         allowed_until = local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         try:
@@ -74,4 +82,4 @@ class BumpService:
         )
         if actual_price is not None:
             logger.info("Лот %s поднят после простоя за %s ₽; время МСК %s", item_id, actual_price, local.isoformat())
-
+        return 'Поднятие выполнено' if actual_price is not None else 'Поднятие пропущено: статус лота или время изменились'

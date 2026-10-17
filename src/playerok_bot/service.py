@@ -29,6 +29,9 @@ class SaleService:
                 record = self.storage.prepare_deal(
                     paid_deal.id, paid_deal.item_id, paid_deal.chat_id
                 )
+                from .finance import Finance
+                Finance(self.storage).record('playerok', paid_deal.id, gross=paid_deal.gross,
+                                             occurred_at=paid_deal.occurred_at, status=paid_deal.status)
                 if record.completed_at:
                     return
 
@@ -59,6 +62,7 @@ class SaleService:
                 if not record.item_published_at:
                     if not self.gateway.is_active():
                         premium_price = self.gateway.publish_premium()
+                        Finance(self.storage).expense('publish:' + record.deal_id, premium_price)
                         logger.info(
                             "Лот %s восстановлен за %s ₽ после сделки %s",
                             paid_deal.item_id,
@@ -107,6 +111,8 @@ class SaleService:
                 if not record.item_published_at:
                     if not self.gateway.is_active():
                         premium_price = self.gateway.publish_premium()
+                        from .finance import Finance
+                        Finance(self.storage).expense('restock:' + record.source_deal_id, premium_price)
                         logger.info(
                             "Лот %s восстановлен после пополнения за %s ₽",
                             item_id,

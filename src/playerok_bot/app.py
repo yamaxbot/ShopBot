@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from .accounts import load_accounts
 from .bump import BumpService
 from .config import Settings
-from .errors import AccountsFormatError, InventoryNotReadyError, ListingValidationError
+from .errors import AccountsFormatError, InventoryNotReadyError, ListingValidationError, PremiumPriceLimitError
 from .fields import DeliveryFieldMapper, FieldOverrides
 from .gateway import ListingInfo, PlayerokGateway
 from .models import Credential
@@ -79,8 +79,12 @@ class BotApplication:
                 gateway.account = primary_gateway.account
             report(f"Playerok: загрузка лота №{number}")
             item = gateway.resolve_listing()
+            if self.storage.ownership:
+                self.storage.ownership.claim_lots('playerok', [str(item.id)])
             report(f"Playerok: проверка лота №{number} и стоимости премиума")
             info = gateway.validate_listing(item)
+            if snapshots and snapshots[0][0].game_name != info.game_name:
+                raise ListingValidationError('Объявления разных игр нужно добавить в разные группы через /group_new')
             if info.id in item_ids:
                 raise ListingValidationError("Несколько ссылок ведут на один и тот же лот")
             item_ids.add(info.id)
@@ -156,7 +160,6 @@ class BotApplication:
                         runtime.service.process(deal)
                     except Exception:
                         continue
-                BumpService(self.settings, self.storage, runtime.gateway).check_due()
             except Exception as exc:
                 logger.warning(
                     "Проверка лота %s временно не выполнена: %s. Повтор через %s с",
@@ -164,6 +167,39 @@ class BotApplication:
                     type(exc).__name__,
                     self.settings.reconcile_seconds,
                 )
+            # Ошибка чтения сделок не должна отключать отдельный таймер поднятия.
+            # Само поднятие повторно проверяет статус и данные лота перед оплатой.
+            try:
+                BumpService(self.settings, self.storage, runtime.gateway).check_due()
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, (ListingValidationError, PremiumPriceLimitError)) else type(exc).__name__
+                code = getattr(exc, 'error_code', None)
+                if isinstance(code, str) and code.isascii() and code.replace('_', '').isalnum() and len(code) < 80:
+                    reason += ': ' + code
+                self.storage.set_state_text('bump_error:' + runtime.gateway.item_id, reason)
+                logger.warning('Поднятие лота %s: %s', runtime.gateway.item_id, type(exc).__name__)
+        try:
+            self.sync_finance()
+        except Exception as exc:
+            logger.warning('Сверка финансов Playerok: %s', type(exc).__name__)
+
+    def sync_finance(self):
+        """Перечитывать статусы известных продаж, включая поздние возвраты."""
+        import time
+        from .finance import Finance
+        now = int(time.time())
+        if self.storage.initialize_state_int('po_finance_due', 0) > now:
+            return
+        self.storage.set_state_int('po_finance_due', now + 300)
+        offset = self.storage.initialize_state_int('po_finance_offset', 0)
+        with self.storage._lock:
+            rows = self.storage._connection.execute("SELECT order_id FROM revenue WHERE platform='playerok' ORDER BY order_id LIMIT 5 OFFSET ?", (offset,)).fetchall()
+        for row in rows:
+            deal = self.listings[0].gateway._require_account().get_deal(row[0])
+            # Текущая цена переиспользуемого лота не восстанавливает цену старой продажи.
+            Finance(self.storage).record('playerok', row[0],
+                                         occurred_at=getattr(deal, 'created_at', None), status=deal.status.name.lower())
+        self.storage.set_state_int('po_finance_offset', offset + len(rows) if len(rows) == 5 else 0)
 
     def _prepare_when_stock_available(self) -> list[ListingInfo] | None:
         last_wait_message: str | None = None

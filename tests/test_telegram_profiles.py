@@ -119,7 +119,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
     from aiogram import Bot, Dispatcher
     from aiogram.client.session.base import BaseSession
     from aiogram.methods import SendMessage, DeleteMessage
-    from aiogram.types import Message, ReplyKeyboardRemove, Update
+    from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, Update
 
     class Session(BaseSession):
         def __init__(self):
@@ -133,7 +133,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             if isinstance(method, DeleteMessage):
                 return True
             if isinstance(method, SendMessage):
-                assert isinstance(method.reply_markup, ReplyKeyboardRemove)
+                assert isinstance(method.reply_markup, (ReplyKeyboardRemove, InlineKeyboardMarkup))
                 self.responses.append((method.chat_id, method.text))
                 return Message.model_validate({
                     "message_id": 100, "date": 1,
@@ -185,7 +185,8 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             await send(101, "/connect")
             await send(202, "/connect")
             await send(101, '/help')
-            assert 'Команды бота' in session.responses[-1][1]
+            assert 'Как работает бот' in session.responses[-1][1]
+            assert 'Карантин' in session.responses[-1][1]
             await send(101, "testtoken-a")
             await send(202, "testtoken-b")
             assert 'Подключён ваш профиль' in session.responses[-1][1]
@@ -235,6 +236,19 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert profiles.get(101).config['funpay_items'] == ['111', '112']
             assert profiles.get(202).config['items'] == ['https://playerok.com/products/own-item-b']
             assert 'Playerok-лоты убраны' in session.responses[-1][1]
+            await send(101, '/group_new Second game')
+            assert profiles.get(101).group_id == 2
+            await send(101, 'second-game@example.test:pass')
+            await send(101, '/group 1')
+            storage = profiles.storage(101)
+            assert storage.counts()['queued'] == 1
+            storage.close()
+            await send(101, '/daily 2026-10-01')
+            assert '01.10.2026' in session.responses[-1][1]
+            await send(101, '/allstats')
+            assert 'Все группы' in session.responses[-1][1]
+            await send(101, '/fees funpay 0 6')
+            assert profiles.get(101).config['funpay_withdrawal'] == 6
         finally:
             await bot.session.close()
             await dispatcher.storage.close()

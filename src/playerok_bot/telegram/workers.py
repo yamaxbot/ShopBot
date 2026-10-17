@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from dataclasses import replace
 
 from aiogram.types import ReplyKeyboardRemove
 
@@ -31,7 +32,7 @@ def worker_environment(profile: Profile, directory: Path) -> dict[str, str]:
     # Исключить как глобальную авторизацию, так и любые настройки чужого профиля.
     environment = {
         key: value for key, value in os.environ.items()
-        if key not in ENGINE_KEYS and not key.startswith(("PLAYEROK_", "TELEGRAM_", "FUNPAY_", "PLATFORM_"))
+        if key not in ENGINE_KEYS and not key.startswith(("PLAYEROK_", "TELEGRAM_", "FUNPAY_", "PLATFORM_", "OWNERSHIP_", "SHOP_"))
     }
     config = profile.config
     items = config["items"]
@@ -53,6 +54,11 @@ def worker_environment(profile: Profile, directory: Path) -> dict[str, str]:
         "FUNPAY_OWNER_ID": profile.funpay_id or '',
         "PLAYEROK_OWNER_ID": profile.playerok_id or '',
         "PLATFORM_INVENTORY": 'true',
+        "SHOP_GROUP_ID": str(profile.group_id),
+        "SHOP_PLAYEROK_FEE": str(config.get('playerok_fee', 0)),
+        "SHOP_FUNPAY_FEE": str(config.get('funpay_fee', 0)),
+        "SHOP_PLAYEROK_WITHDRAWAL": str(config.get('playerok_withdrawal', 3)),
+        "SHOP_FUNPAY_WITHDRAWAL": str(config.get('funpay_withdrawal', 6)),
     })
     for index, item in enumerate(items[1:], 2):
         environment[f"PLAYEROK_ITEM_{index}"] = item
@@ -63,17 +69,20 @@ class Workers:
     def __init__(self, profiles: Profiles, max_workers: int):
         self.profiles = profiles
         self.max_workers = max_workers
-        self.processes: dict[int, asyncio.subprocess.Process] = {}
+        self.processes: dict[tuple[int, int], asyncio.subprocess.Process] = {}
         self.lock = asyncio.Lock()
-        self.revisions: dict[int, int] = {}
-        self.funpay_alerts: dict[int, set[int]] = {}
+        self.revisions: dict[tuple[int, int], int] = {}
+        self.funpay_alerts: dict[tuple[int, int], set[int]] = {}
+        self.bump_alerts: dict[tuple[int, int], set[tuple[str, str]]] = {}
 
     def environment(self, profile: Profile):
-        directory = self.profiles.user_dir(profile.user_id)
+        directory = self.profiles.user_dir(profile.user_id, profile.group_id)
         accounts = directory / "accaunts.txt"
         if not accounts.exists():
             accounts.write_text("# Аккаунты загружаются в личную SQLite-базу через Telegram\n", encoding="utf-8")
-        return directory, worker_environment(profile, directory)
+        env = worker_environment(profile, directory)
+        env['OWNERSHIP_PATH'] = str(self.profiles.user_dir(profile.user_id) / 'ownership.sqlite3')
+        return directory, env
 
     async def probe(self, profile: Profile, mode="check") -> dict:
         platform = "FunPay" if mode.startswith("funpay_") else "Playerok"
@@ -107,10 +116,9 @@ class Workers:
 
     async def connect(self, user_id: int, cookies: str, user_agent: str):
         profile = self.profiles.get(user_id)
-        candidate = Profile(user_id, profile.playerok_id, False, profile.last_notified,
-                            {**profile.config, "cookies": cookies, "user_agent": user_agent})
+        candidate = replace(profile, config={**profile.config, "cookies": cookies, "user_agent": user_agent})
         result = await self.probe(candidate, "identity")
-        await self.stop(user_id)
+        await self.stop_all(user_id)
         self.profiles.connect(user_id, result["id"], cookies, user_agent)
         return result["username"]
 
@@ -131,10 +139,9 @@ class Workers:
 
     async def connect_funpay(self, user_id: int, key: str, agent: str):
         profile = self.profiles.get(user_id)
-        candidate = Profile(user_id, profile.playerok_id, False, profile.last_notified,
-                            {**profile.config, 'funpay_key': key, 'funpay_agent': agent}, profile.funpay_id)
+        candidate = replace(profile, config={**profile.config, 'funpay_key': key, 'funpay_agent': agent})
         result = await self.probe(candidate, 'funpay_identity')
-        await self.stop(user_id)
+        await self.stop_all(user_id)
         self.profiles.connect_funpay(user_id, result['id'], key, agent)
         return result['username']
 
@@ -150,18 +157,20 @@ class Workers:
     async def start(self, user_id: int):
         if self.running(user_id):
             return
-        expected = self.profiles.get(user_id).config
-        revision = self.revisions.get(user_id, 0)
+        profile = self.profiles.get(user_id)
+        key = (user_id, profile.group_id)
+        expected = profile.config
+        revision = self.revisions.get(key, 0)
         await self.check(user_id)
         async with self.lock:
-            if self.revisions.get(user_id, 0) != revision or self.profiles.get(user_id).config != expected:
+            if self.revisions.get(key, 0) != revision or self.profiles.get(user_id).group_id != profile.group_id or self.profiles.get(user_id, profile.group_id).config != expected:
                 raise ConfigurationError("Настройки изменены или запуск отменён. При необходимости выполните /run ещё раз")
             if self.running(user_id):
                 return
-            if sum(self.running(uid) for uid in self.processes) >= self.max_workers:
+            if sum(p.returncode is None for p in self.processes.values()) >= self.max_workers:
                 raise ConfigurationError("На сервере достигнут лимит одновременно работающих профилей")
             await self._spawn(self.profiles.get(user_id))
-            self.profiles.set_enabled(user_id, True)
+            self.profiles.set_enabled(user_id, True, profile.group_id)
 
     async def _spawn(self, profile: Profile):
         directory, env = self.environment(profile)
@@ -170,10 +179,11 @@ class Workers:
                 sys.executable, "-m", "playerok_bot", "run", cwd=directory,
                 env=env, stdout=output, stderr=output, **process_options(),
             )
-        self.processes[profile.user_id] = process
+        self.processes[(profile.user_id, profile.group_id)] = process
 
-    def running(self, user_id: int) -> bool:
-        process = self.processes.get(user_id)
+    def running(self, user_id: int, group_id: int | None = None) -> bool:
+        group_id = group_id or self.profiles.get(user_id).group_id
+        process = self.processes.get((user_id, group_id))
         return process is not None and process.returncode is None
 
     @staticmethod
@@ -195,11 +205,17 @@ class Workers:
             process.kill()
             await process.wait()
 
-    async def stop(self, user_id: int):
+    async def stop_all(self, user_id: int):
+        for group in self.profiles.groups(user_id):
+            await self.stop(user_id, group.group_id)
+
+    async def stop(self, user_id: int, group_id: int | None = None):
+        profile = self.profiles.get(user_id, group_id)
+        key = (user_id, profile.group_id)
         async with self.lock:
-            self.revisions[user_id] = self.revisions.get(user_id, 0) + 1
-            self.profiles.set_enabled(user_id, False)
-            process = self.processes.pop(user_id, None)
+            self.revisions[key] = self.revisions.get(key, 0) + 1
+            self.profiles.set_enabled(user_id, False, profile.group_id)
+            process = self.processes.pop(key, None)
             if process is not None:
                 await self._terminate(process)
 
@@ -213,7 +229,7 @@ class Workers:
         for profile in self.profiles.all():
             if profile.enabled:
                 if len(self.processes) >= self.max_workers:
-                    self.profiles.set_enabled(profile.user_id, False)
+                    self.profiles.set_enabled(profile.user_id, False, profile.group_id)
                 else:
                     await self._spawn(profile)
 
@@ -222,32 +238,41 @@ class Workers:
             await asyncio.sleep(10)
             for profile in self.profiles.all():
                 try:
-                    process = self.processes.get(profile.user_id)
+                    key = (profile.user_id, profile.group_id)
+                    process = self.processes.get(key)
                     if process is not None and process.returncode is not None:
-                        self.processes.pop(profile.user_id)
-                        self.profiles.set_enabled(profile.user_id, False)
-                        await bot.send_message(profile.user_id, "Автовыдача остановилась с ошибкой. Выполните /check, затем /run. Очередь сохранена.", reply_markup=ReplyKeyboardRemove())
-                    storage = self.profiles.storage(profile.user_id)
+                        self.processes.pop(key)
+                        self.profiles.set_enabled(profile.user_id, False, profile.group_id)
+                        await bot.send_message(profile.user_id, f"Группа «{profile.group_name}»: автовыдача остановилась с ошибкой. Выполните /check, затем /run. Очередь сохранена.", reply_markup=ReplyKeyboardRemove())
+                    storage = self.profiles.storage(profile.user_id, profile.group_id)
                     try:
                         counts = storage.counts()
                         from ..inventory import Inventory
                         stock = Inventory(storage).stats()
                         pending = Inventory(storage).pending_edits()
+                        with storage._lock:
+                            bump_errors = {(row['key'], row['value']) for row in storage._connection.execute(
+                                "SELECT key,value FROM bot_state WHERE key LIKE 'bump_error:%' AND value!=''")}
                     finally:
                         storage.close()
+                    if bump_errors - self.bump_alerts.get(key, set()):
+                        await bot.send_message(profile.user_id, f'Группа «{profile.group_name}»: поднятие Playerok не выполнено. '
+                                               'Причина и таймер — /bump_status. Проверьте выбранную группу через /groups.',
+                                               reply_markup=ReplyKeyboardRemove())
+                    self.bump_alerts[key] = bump_errors
                     uncertain = {op['id'] for op in pending if op['status'] == 'uncertain'}
-                    if uncertain - self.funpay_alerts.get(profile.user_id, set()):
-                        await bot.send_message(profile.user_id, 'Изменение FunPay требует сверки. Затронутые лоты приостановлены, аккаунты повторно не загружаются. Подробности — /fp_errors и /stats.', reply_markup=ReplyKeyboardRemove())
-                    self.funpay_alerts[profile.user_id] = uncertain
+                    if uncertain - self.funpay_alerts.get(key, set()):
+                        await bot.send_message(profile.user_id, f'Группа «{profile.group_name}»: изменение FunPay требует сверки. Затронутые лоты приостановлены, аккаунты повторно не загружаются. Подробности — /fp_errors и /stats.', reply_markup=ReplyKeyboardRemove())
+                    self.funpay_alerts[key] = uncertain
                     milestone = profile.last_notified + 10
                     while counts["completed_deals"] + stock['funpay_sold'] >= milestone:
                         await bot.send_message(
                             profile.user_id,
-                            f"Продано/выдано аккаунтов: {milestone}\nОсталось по базе без карантина: {counts['queued'] + counts['listed'] - stock['funpay_unknown']}\n"
+                            f"Группа «{profile.group_name}»\nПродано/выдано аккаунтов: {milestone}\nОсталось по базе без карантина: {counts['queued'] + counts['listed'] - stock['funpay_unknown']}\n"
                             f"FunPay: {stock['funpay_listed']}, резерв Playerok: {stock['playerok_reserve']}",
                             reply_markup=ReplyKeyboardRemove(),
                         )
-                        self.profiles.mark_notified(profile.user_id, milestone)
+                        self.profiles.mark_notified(profile.user_id, milestone, profile.group_id)
                         milestone += 10
                 except Exception as exc:
                     logger.warning("Проверка Telegram-профиля %s временно не выполнена: %s", profile.user_id, type(exc).__name__)

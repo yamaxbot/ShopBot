@@ -6,6 +6,7 @@ import logging
 import re
 from contextlib import suppress
 from pathlib import Path
+from datetime import date, datetime
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -16,7 +17,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
-from aiogram.types import BotCommand, Message, ReplyKeyboardRemove
+from aiogram.types import BotCommand, Message, ReplyKeyboardRemove, CallbackQuery
 
 from ..accounts import parse_accounts_text
 from ..errors import BotError, ConfigurationError
@@ -27,6 +28,9 @@ from .config import DEFAULT_BROWSER_USER_AGENT, TelegramSettings
 from .profiles import Profiles
 from .workers import Workers
 from .lock import HostLock
+from .reports import report_page
+from .help_text import help_text
+from ..finance import MSK, Finance, rate, render_report
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,7 @@ class Setup(StatesGroup):
 def start_text():
     return (
         "Бот пополняет ваши лоты Playerok и FunPay. У каждого пользователя свой склад.\n\n"
-        "1. Создайте объявления на площадке.\n"
+        "1. Создайте объявления и группу: /group_new Название. Старый склад — в «Основной».\n"
         "2. Подключите Playerok: /connect → /items, или FunPay: /fp_connect → /fp_items. Можно обе площадки.\n"
         "3. Отправьте аккаунты в формате логин:пароль, каждый с новой строки, или файлом .txt. Для Playerok добавьте и данные текущих лотов.\n"
         "4. Выполните /check, затем /run.\n\n"
@@ -56,7 +60,16 @@ def commands_text():
         "Команды бота\n\n"
         "Основные\n"
         "/start — короткая инструкция по запуску.\n"
-        "/commands или /help — список команд с пояснениями.\n"
+        "/commands — все команды. /help — как работает бот и что означают статусы.\n"
+        "/groups — список групп. /group ID — выбрать группу.\n"
+        "/group_new Название — создать и выбрать группу.\n"
+        "/group_rename Название — переименовать выбранную группу.\n"
+        "/stop_all — остановить обслуживание всех ваших групп.\n"
+        "/daily [ГГГГ-ММ-ДД] — статистика выбранной группы за день с листанием.\n"
+        "/daily all [ГГГГ-ММ-ДД] — день по всем группам.\n"
+        "/allstats — статистика всех групп за всё время.\n"
+        "/fees — ставки; /fees playerok 0 3 или /fees funpay 0 6 (продажа%, вывод%).\n"
+        "/bump_status — таймеры и ошибки поднятий Playerok.\n"
         "/settings — ваши подключения и настройки.\n"
         "/add — как добавить аккаунты; можно сразу /add логин:пароль. Сообщения и .txt также принимаются без команды.\n"
         "/check — проверить подключённые площадки и лоты.\n"
@@ -75,7 +88,7 @@ def commands_text():
         "/fp_check — проверить FunPay, лоты и возможность автоподнятия.\n"
         "/fp_errors — показать изменения, результат которых требует сверки.\n\n"
         "Резерв Playerok: 5 запасных аккаунтов сверх выставленных. FunPay: каждый лот пополняется до 5 при наличии товара и поднимается, когда FunPay разрешит.\n"
-        "После изменения настроек выполните /run. /stop останавливает бота, но FunPay продолжает выдавать уже загруженный товар; для остановки продаж отключите лоты на сайте."
+        "Настройки и аккаунты относятся к выбранной группе (/groups). После изменения настроек выполните /run. /stop останавливает бота, но FunPay продолжает выдавать уже загруженный товар; для остановки продаж отключите лоты на сайте."
     )
 
 
@@ -157,7 +170,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         await erase(message)
         await reply(
             message,
-            f"Добавлено: {inserted}\nУже были в базе: {len(accounts) - inserted}\n"
+            f"Группа «{profiles.get(message.from_user.id).group_name}»\nДобавлено: {inserted}\nУже были в базе: {len(accounts) - inserted}\n"
             f"Осталось: {counts['queued'] + counts['listed']}",
         )
 
@@ -167,10 +180,139 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         profiles.get(message.from_user.id)
         await reply(message, start_text())
 
-    @router.message(Command("commands", "help"))
+    @router.message(Command("commands"))
     @router.message(F.text == "Команды")
     async def commands(message: Message):
         await reply(message, commands_text())
+
+    @router.message(Command("help"))
+    async def help_command(message: Message):
+        await reply(message, help_text())
+
+    @router.message(Command("groups"))
+    async def groups_command(message: Message, state: FSMContext):
+        await state.clear()
+        selected = profiles.get(message.from_user.id).group_id
+        lines = [f"{'→' if g.group_id == selected else '•'} №{g.group_id} {g.group_name} — "
+                 f"{'работает' if workers.running(g.user_id, g.group_id) else 'остановлена'}, "
+                 f"Playerok: {len(g.config['items'])}, FunPay: {len(g.config['funpay_items'])}"
+                 for g in profiles.groups(message.from_user.id)]
+        await reply(message, 'Ваши группы\n' + '\n'.join(lines) + '\n\nВыбрать: /group ID. Создать: /group_new Название.')
+
+    @router.message(Command("group", "group_new", "group_rename"))
+    async def group_command(message: Message, state: FSMContext, command: CommandObject):
+        await state.clear()
+        try:
+            arg = (command.args or '').strip()
+            if command.command == 'group_new':
+                group = profiles.create_group(message.from_user.id, arg)
+            elif command.command == 'group_rename':
+                if not 1 <= len(arg) <= 60 or any(ord(c) < 32 for c in arg):
+                    raise ConfigurationError('Используйте /group_rename Название (до 60 символов)')
+                group = profiles.get(message.from_user.id)
+                import sqlite3
+                try:
+                    with profiles.connection:
+                        profiles.connection.execute('UPDATE product_groups SET name=? WHERE user_id=? AND group_id=?',
+                                                    (arg, group.user_id, group.group_id))
+                except sqlite3.IntegrityError:
+                    raise ConfigurationError('Такое название группы уже есть') from None
+                group = profiles.get(message.from_user.id)
+            else:
+                if not arg.isascii() or not arg.isdigit():
+                    raise ConfigurationError('Используйте /group ID. Список: /groups')
+                profiles.select_group(message.from_user.id, int(arg))
+                group = profiles.get(message.from_user.id)
+            await reply(message, f'Выбрана группа №{group.group_id}: {group.group_name}.\n'
+                        'Объявления (/items, /fp_items), отправленные аккаунты и команды /run, /stop относятся к ней. '
+                        'Другие запущенные группы продолжают работать.')
+        except BotError as exc:
+            await reply(message, str(exc))
+
+    @router.message(Command('stop_all'))
+    async def stop_all(message: Message, state: FSMContext):
+        await state.clear()
+        await workers.stop_all(message.from_user.id)
+        await reply(message, 'Все ваши группы остановлены. Загруженная автовыдача FunPay продолжает работать на сайте.')
+
+    @router.message(Command('fees'))
+    async def fees(message: Message, state: FSMContext, command: CommandObject):
+        await state.clear()
+        group = profiles.get(message.from_user.id)
+        parts = (command.args or '').split()
+        if not parts:
+            await reply(message, f'Группа «{group.group_name}»\n' + '\n'.join(
+                f"{platform}: продажа {group.config[platform + '_fee']}%, вывод {group.config[platform + '_withdrawal']}%"
+                for platform in ('playerok', 'funpay')) + '\nНастроить: /fees playerok 0 3 или /fees funpay 0 6. Ставки сохраняются для новых продаж; старые записи не пересчитываются.')
+            return
+        try:
+            if len(parts) != 3 or parts[0] not in {'playerok', 'funpay'}:
+                raise ValueError()
+            sale, withdrawal = rate(parts[1]), rate(parts[2])
+            await workers.stop(message.from_user.id)
+            profiles.update(message.from_user.id, **{parts[0] + '_fee': sale / 100, parts[0] + '_withdrawal': withdrawal / 100})
+            await reply(message, 'Ставки сохранены для новых продаж выбранной группы. Выполните /run.')
+        except ValueError:
+            await reply(message, 'Формат: /fees playerok 0 3 или /fees funpay 0 6. Проценты от 0 до 100.')
+
+    @router.message(Command('allstats', 'daily'))
+    async def financial_report(message: Message, state: FSMContext, command: CommandObject):
+        await state.clear()
+        group = profiles.get(message.from_user.id)
+        args = (command.args or '').split()
+        group_id = 0 if command.command == 'allstats' else group.group_id
+        if args and args[0] == 'all':
+            group_id = 0
+            args = args[1:]
+        try:
+            day = None if command.command == 'allstats' else date.fromisoformat(args[0]) if args else datetime.now(MSK).date()
+            if len(args) > 1 or (day and not date(2000, 1, 1) <= day <= datetime.now(MSK).date()):
+                raise ValueError()
+        except ValueError:
+            await reply(message, 'Формат: /daily ГГГГ-ММ-ДД или /daily all ГГГГ-ММ-ДД; дата не должна быть в будущем.')
+            return
+        text, keyboard = report_page(profiles, message.from_user.id, group_id, day)
+        await reply(message, text, reply_markup=keyboard)
+
+    @router.callback_query(F.data.startswith('report:'))
+    async def report_callback(query: CallbackQuery):
+        if not isinstance(query.message, Message) or query.message.chat.type != ChatType.PRIVATE or query.message.chat.id != query.from_user.id:
+            await query.answer('Откройте личный чат с ботом')
+            return
+        if settings.allowed_user_ids and query.from_user.id not in settings.allowed_user_ids:
+            await query.answer('Доступ ограничен')
+            return
+        try:
+            _, owner, group, value = query.data.split(':')
+            if int(owner) != query.from_user.id:
+                raise ValueError()
+            day = None if value == 'all' else date.fromisoformat(value)
+            if day and not date(2000, 1, 1) <= day <= datetime.now(MSK).date():
+                raise ValueError()
+            text, keyboard = report_page(profiles, query.from_user.id, int(group), day)
+        except (ValueError, BotError):
+            await query.answer('Отчёт недоступен. Откройте /daily заново.')
+            return
+        await query.answer()
+        if query.message.text != text or query.message.reply_markup != keyboard:
+            await query.message.edit_text(text, reply_markup=keyboard)
+
+    @router.message(Command('bump_status'))
+    async def bump_status(message: Message):
+        profile = profiles.get(message.from_user.id)
+        storage = profiles.storage(profile.user_id)
+        try:
+            with storage._lock:
+                rows = storage._connection.execute("SELECT * FROM bot_state WHERE key LIKE 'bump_status:%' OR key LIKE 'bump_error:%' ORDER BY key").fetchall()
+                attempts = storage._connection.execute('SELECT item_id,status,error_code FROM bumps ORDER BY id DESC LIMIT 3').fetchall()
+            lines = [f"{row['key'].split(':', 1)[1]}: {row['value']} ({row['updated_at']})" for row in rows if row['value']]
+            lines += [f"Попытка {row['item_id']}: {row['status']} {row['error_code'] or ''}" for row in attempts]
+        finally:
+            storage.close()
+        await reply(message, f'Группа «{profile.group_name}». Поднятия: {"включены" if profile.config["bump"] else "выключены"}. '
+                    f'Обработчик: {"работает" if workers.running(profile.user_id) else "остановлен"}.\n'
+                    + ('\n'.join(lines) or 'Проверок поднятия ещё не было. Выполните /check и /run.')
+                    + '\nИнтервал: 2 часа отдельно для каждого лота, только 12:00–00:00 МСК.')
 
     @router.message(Command("cancel"))
     async def cancel(message: Message, state: FSMContext):
@@ -184,6 +326,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         profile = profiles.get(message.from_user.id)
         await reply(
             message,
+            f"Группа №{profile.group_id}: {profile.group_name}\n"
             f"Playerok подключён: {'да' if profile.playerok_id else 'нет'}\n"
             f"Лотов: {len(profile.config['items'])}\n"
             f"Лимит операции: {profile.config['price_limit']} ₽\n"
@@ -290,7 +433,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         await reply(message, "Проверяю настройку перед запуском…")
         try:
             await workers.start(message.from_user.id)
-            await reply(message, "Автовыдача запущена. Статистика — /stats, остановка — /stop.")
+            await reply(message, "Автовыдача выбранной группы запущена. Статистика — /stats, остановка — /stop.")
         except BotError as exc:
             await reply(message, str(exc))
 
@@ -299,7 +442,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
     async def stop(message: Message, state: FSMContext):
         await state.clear()
         await workers.stop(message.from_user.id)
-        await reply(message, "Автовыдача остановлена. Очередь и история сохранены.")
+        await reply(message, "Автовыдача выбранной группы остановлена. Очередь и история сохранены.")
 
     @router.message(Command("stats", "status"))
     @router.message(F.text == "Статистика")
@@ -310,11 +453,12 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         try:
             counts = storage.counts()
             stock = Inventory(storage).stats()
+            financial = Finance(storage).report()
         finally:
             storage.close()
         await reply(
             message,
-            "Ваша статистика\n\n"
+            f"Ваша статистика · {profiles.get(message.from_user.id).group_name}\n\n"
             f"Всего продано/выдано: {counts['completed_deals'] + stock['funpay_sold']}\n"
             f"Продано Playerok: {counts['completed_deals']}\nВыдано FunPay: {stock['funpay_sold']}\n"
             f"Выставлено Playerok: {counts['listed']}\nРезерв Playerok: {stock['playerok_reserve']} / 5\n"
@@ -326,7 +470,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             f"Поднятий: {counts['successful_bumps']}\n"
             f"Восстановлений с ошибкой: {counts['failed_restocks']}\n"
             f"Поднятий с неизвестным результатом: {counts['uncertain_bumps']}\n\n"
-            + '\n'.join(f"FunPay {lot['lot_id']}: {lot['amount']}/5, {'активен' if lot['active'] else 'неактивен'}" for lot in stock['lots'])
+            + '\n'.join(f"FunPay {lot['lot_id']}: {lot['amount']}/5, {'активен' if lot['active'] else 'неактивен'}" for lot in stock['lots']) + '\n\nЗа всё время\n' + render_report(financial)
         )
 
     @router.message(Command("add"))
@@ -387,9 +531,13 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             await reply(message, str(exc))
             return
         await workers.stop(message.from_user.id)
-        profiles.update(message.from_user.id, funpay_items=lots)
+        try:
+            profiles.update(message.from_user.id, funpay_items=lots)
+        except BotError as exc:
+            await reply(message, str(exc))
+            return
         await state.clear()
-        await reply(message, 'FunPay-лоты сохранены. Добавьте запас аккаунтов, затем /fp_check и /run. Все площадки используют ваш личный склад с отдельными резервами.')
+        await reply(message, 'FunPay-лоты сохранены. Добавьте запас аккаунтов, затем /fp_check и /run. Объявления и новые аккаунты относятся к выбранной группе (/settings).')
 
     @router.message(Setup.items, F.text)
     async def receive_items(message: Message, state: FSMContext):
@@ -399,7 +547,11 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             await reply(message, str(exc))
             return
         await workers.stop(message.from_user.id)
-        profiles.update(message.from_user.id, items=references)
+        try:
+            profiles.update(message.from_user.id, items=references)
+        except BotError as exc:
+            await reply(message, str(exc))
+            return
         await state.clear()
         await reply(message, "Playerok-лоты сохранены. Отправьте боту точные логины и пароли аккаунтов, уже указанных в этих лотах, и запас. Затем /check и /run.")
 
@@ -467,7 +619,12 @@ async def run(settings: TelegramSettings):
                 ("items", "Мои объявления"), ("add", "Добавить аккаунты"),
                 ("stats", "Моя статистика"), ("check", "Проверить лоты"),
                 ("run", "Запустить продажи"), ("stop", "Остановить продажи"),
-                ("help", "Помощь и список команд"),
+                ("help", "Как работает бот и что означают статусы"),
+                ("groups", "Группы товаров"), ("group", "Выбрать группу"),
+                ("group_new", "Создать группу"), ("group_rename", "Переименовать группу"),
+                ("daily", "Статистика по дням"), ("allstats", "Все группы за всё время"),
+                ("fees", "Комиссии для расчёта"), ("bump_status", "Таймеры поднятия Playerok"),
+                ("stop_all", "Остановить все группы"), ("status", "Статистика выбранной группы"),
                 ("cancel", "Отменить ввод"), ("limit", "Лимит стоимости Playerok"),
                 ("bump", "Включить или выключить поднятия"),
                 ("fp_connect", "Подключить FunPay"), ("fp_items", "Мои лоты FunPay"),

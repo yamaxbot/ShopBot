@@ -140,11 +140,6 @@ class PlayerokGateway:
         self.field_mapper.validate(fields)
         premium = self._premium_status(item)
         game_name = getattr(getattr(item, "game", None), "name", "") or ""
-        if "car parking multiplayer 2" not in game_name.casefold():
-            raise ListingValidationError(
-                f"Лот относится к игре «{game_name or 'не определена'}», "
-                "ожидалась Car Parking Multiplayer 2"
-            )
         return ListingInfo(
             id=str(item.id),
             name=item.name,
@@ -209,7 +204,9 @@ class PlayerokGateway:
             return None
         if datetime.now(timezone.utc) >= allowed_until:
             return None
-        self._require_account().increase_item_priority_status(self.item_id, priority_id)
+        updated = self._require_account().increase_item_priority_status(self.item_id, priority_id)
+        if updated is None or str(getattr(updated, 'id', '')) != self.item_id:
+            raise ListingValidationError('Playerok не подтвердил обновление приоритета лота')
         return int(premium.price)
 
     def confirm_deal_sent(self, deal_id: str) -> None:
@@ -257,5 +254,7 @@ class PlayerokGateway:
             if not self._is_target_item(getattr(deal, "item", None)):
                 continue
             chat_id = getattr(getattr(deal, "chat", None), "id", None)
-            result.append(PaidDeal(str(deal.id), self.item_id, chat_id))
+            result.append(PaidDeal(str(deal.id), self.item_id, chat_id,
+                                   getattr(deal.item, 'price', None), getattr(deal, 'created_at', None),
+                                   getattr(deal.status, 'name', 'PAID').lower()))
         return result

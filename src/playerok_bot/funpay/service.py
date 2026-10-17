@@ -26,6 +26,9 @@ class FunPayService:
         if self.gateway.id is None:
             self.gateway.connect()
         snapshots = [self.gateway.read(lot) for lot in self.lots]
+        if self.inventory.storage.ownership:
+            self.inventory.storage.ownership.claim_lots('funpay', self.lots)
+            self.inventory.storage.ownership.claim_accounts([c for lot in snapshots for c in lot.credentials])
         if len({lot.node_id for lot in snapshots}) != 1:
             raise FunPayError('Для общего запаса FunPay укажите лоты одной категории с одинаковым товаром')
         self.node_id = snapshots[0].node_id
@@ -184,26 +187,50 @@ class FunPayService:
         with storage._transaction() as db:
             db.execute("INSERT INTO bot_state VALUES ('fp_sales_cursor',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
                        (next_cursor, _utc_now()))
+        # Закрытый заказ может получить возврат позднее и уже уйти с первой страницы.
+        now = int(time.time())
+        if storage.initialize_state_int('fp_finance_due', 0) <= now:
+            storage.set_state_int('fp_finance_due', now + 300)
+            offset = storage.initialize_state_int('fp_finance_offset', 0)
+            with storage._lock:
+                rows = storage._connection.execute("SELECT order_id FROM revenue WHERE platform='funpay' ORDER BY order_id LIMIT 5 OFFSET ?", (offset,)).fetchall()
+            if rows:
+                self._sync_orders([row[0] for row in rows])
+            storage.set_state_int('fp_finance_offset', offset + len(rows) if len(rows) == 5 else 0)
 
     def _sync_orders(self, ids):
-        pending = [order_id for order_id in ids if self.inventory.order_seen(order_id) is not True]
+        known = all(self.inventory.order_seen(order_id) is True for order_id in ids)
+        pending = ids
         for index in range(0, len(pending), 10):
             batch = pending[index:index + 10]
             orders = self.gateway.orders(batch)
             for order_id in batch:
                 order = orders[order_id]
                 secrets = order.get('type_data', {}).get('secrets', [])
+                parsed_count = 0
+                all_parsed = bool(secrets)
                 for secret in secrets:
                     try:
                         credentials = parse_accounts_text(secret['value'])
                     except (KeyError, TypeError, BotError):
+                        all_parsed = False
                         continue
+                    parsed_count += len(credentials)
                     for credential in credentials:
                         self.inventory.confirm_sale(order_id, credential)
+                from ..finance import Finance
+                with self.inventory.storage._lock:
+                    count = self.inventory.storage._connection.execute('SELECT COUNT(*) FROM funpay_sales WHERE order_id=?', (order_id,)).fetchone()[0]
+                if count:
+                    # Сумма заказа учитывается один раз, даже если выдано несколько аккаунтов.
+                    Finance(self.inventory.storage).record('funpay', order_id, count,
+                        gross=order.get('amount') if all_parsed and parsed_count == count else None,
+                        currency=order.get('currency', 'UNKNOWN'),
+                        occurred_at=order.get('created_at'), status=order.get('status', 'unknown'))
                 # Выданный аккаунт никогда не возвращается в продажу, даже при возврате.
                 terminal = order.get('status') in {'closed', 'refunded', 'partially_refunded'}
                 self.inventory.mark_order(order_id, terminal)
-        return not pending
+        return known
 
     def reconcile_once(self):
         blocked = self.recover()

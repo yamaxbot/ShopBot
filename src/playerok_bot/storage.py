@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ class StorageError(BotError):
 
 
 class Storage:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, registry: Path | None = None, group_id: int | None = None):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
@@ -29,6 +30,15 @@ class Storage:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._lock = threading.RLock()
         self._migrate()
+        from .ownership import Ownership
+        registry = registry or (Path(os.environ['OWNERSHIP_PATH']) if os.environ.get('OWNERSHIP_PATH') else None)
+        self.ownership = Ownership(registry, group_id or int(os.environ.get('SHOP_GROUP_ID', '1'))) if registry else None
+        if self.ownership:
+            try:
+                self.ownership.claim_accounts([Credential(r['login'], r['password']) for r in self._connection.execute('SELECT login,password FROM accounts')])
+            except Exception:
+                self._connection.close()
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -121,6 +131,14 @@ class Storage:
                 """
             )
             connection.executescript(SCHEMA)
+            from .finance import SCHEMA as FINANCE_SCHEMA
+            connection.executescript(FINANCE_SCHEMA)
+            connection.execute("""INSERT OR IGNORE INTO revenue
+                SELECT 'playerok',deal_id,created_at,1,1,NULL,'RUB',NULL,NULL,'legacy'
+                FROM deals WHERE inventory_committed_at IS NOT NULL""")
+            connection.execute("""INSERT OR IGNORE INTO revenue
+                SELECT 'funpay',order_id,MIN(created_at),1,COUNT(*),NULL,'RUB',NULL,NULL,'legacy'
+                FROM funpay_sales GROUP BY order_id""")
 
     @staticmethod
     def _account(row: sqlite3.Row | None) -> StoredAccount | None:
@@ -156,6 +174,8 @@ class Storage:
         )
 
     def import_accounts(self, credentials: list[Credential]) -> int:
+        if self.ownership:
+            self.ownership.claim_accounts(credentials)
         inserted = 0
         now = _utc_now()
         with self._transaction() as connection:
@@ -505,6 +525,9 @@ class Storage:
                 "UPDATE bumps SET status = ?, error_code = ?, price_rub = COALESCE(?, price_rub) WHERE id = ?",
                 (status, error_code, price, operation_id),
             )
+            if status == 'skipped':
+                item = connection.execute('SELECT item_id FROM bumps WHERE id=?', (operation_id,)).fetchone()[0]
+                connection.execute("UPDATE listing_timers SET last_bump_attempt_at=(SELECT MAX(attempted_at) FROM bumps WHERE item_id=? AND status!='skipped') WHERE item_id=?", (item, item))
 
     def mark_error(self, deal_id: str, error_code: str) -> None:
         with self._transaction() as connection:
@@ -545,6 +568,11 @@ class Storage:
                 """,
                 (key, str(value), now),
             )
+
+    def set_state_text(self, key: str, value: str) -> None:
+        with self._transaction() as db:
+            db.execute('INSERT INTO bot_state VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                       (key, value, _utc_now()))
 
     def counts(self) -> dict[str, int]:
         with self._lock:

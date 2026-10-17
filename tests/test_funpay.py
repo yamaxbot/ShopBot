@@ -292,6 +292,26 @@ def test_orders_count_delivered_goods_even_if_later_refunded(storage):
     assert not gateway.lots['1'].credentials
 
 
+def test_late_refund_outside_first_page_updates_money(storage):
+    from playerok_bot.finance import Finance
+    stock = accounts(2)
+    gateway = Gateway({'1': stock})
+    service = FunPayService(storage, gateway, ['1'])
+    service.reconcile_once()
+    gateway.sales['OLD'] = {'status': 'closed', 'amount': '100.00', 'currency': 'RUB',
+                            'type_data': {'secrets': [{'value': format_secrets([c])} for c in stock]}}
+    service.sync_sales()
+    assert Finance(storage).report()['gross'] == 10000
+    assert Finance(storage).report()['orders'] == 1
+    assert Finance(storage).report()['accounts'] == 2
+    gateway.sales_page = lambda cursor=None: ([], None)
+    gateway.sales['OLD']['status'] = 'refunded'
+    storage.set_state_int('fp_finance_due', 0)
+    service.sync_sales()
+    assert Finance(storage).report()['gross'] == 0
+    assert Finance(storage).report()['refunds'] == 1
+
+
 def test_duplicate_login_across_platforms_and_changed_password_rejected(storage):
     stock = accounts(1)
     storage.import_accounts(stock)
@@ -489,6 +509,9 @@ def test_old_registry_profiles_gain_funpay_defaults_without_losing_config(tmp_pa
     profiles.connect(101, 'playerok', 'token=original', 'agent')
     encrypted = profiles._encode({'cookies': 'token=original', 'user_agent': 'agent', 'items': ['old-item'], 'price_limit': 25, 'bump': False})
     profiles.connection.execute('UPDATE profiles SET config=? WHERE user_id=101', (encrypted,))
+    # В старой версии таблиц групп ещё не было.
+    profiles.connection.execute('DROP TABLE product_groups')
+    profiles.connection.execute('DROP TABLE selected_groups')
     profiles.connection.commit()
     profiles.close()
     reopened = Profiles(tmp_path)

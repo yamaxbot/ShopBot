@@ -186,6 +186,7 @@ def test_gateway_rechecks_sale_and_midnight_before_payment():
     gateway = PlayerokGateway(None, None)
     gateway._resolved_item_id = "item-1"
     gateway.account = Mock()
+    gateway.account.increase_item_priority_status.return_value = SimpleNamespace(id='item-1')
     item = SimpleNamespace(id="item-1", price=90, status=ItemStatuses.SOLD)
     gateway.get_listing = lambda: item
     gateway._premium_status = lambda item: SimpleNamespace(id="premium-id", price=25)
@@ -196,3 +197,36 @@ def test_gateway_rechecks_sale_and_midnight_before_payment():
     gateway.account.increase_item_priority_status.assert_not_called()
     assert gateway.bump_premium("premium-id", allowed_until=msk(day=3)) == 25
     gateway.account.increase_item_priority_status.assert_called_once_with("item-1", "premium-id")
+
+
+def test_sales_api_failure_does_not_skip_bump_check(tmp_path, monkeypatch):
+    from playerok_bot.app import BotApplication, ListingRuntime
+    from unittest.mock import Mock
+    service, gateway, storage = make_service(tmp_path, msk(hour=12))
+    gateway.recent_paid_deals = Mock(side_effect=ConnectionError())
+    app = BotApplication.__new__(BotApplication)
+    app.settings = settings(tmp_path)
+    app.storage = storage
+    app.listings = [ListingRuntime(gateway, Mock())]
+    app.import_accounts_from_file = Mock()
+    app.sync_finance = Mock()
+    check = Mock()
+    monkeypatch.setattr(BumpService, 'check_due', check)
+    try:
+        app.reconcile_once()
+        check.assert_called_once()
+    finally:
+        storage.close()
+
+
+def test_skipped_payment_does_not_reset_two_hour_timer(tmp_path):
+    service, gateway, storage = make_service(tmp_path, msk(hour=12))
+    gateway.bump_premium = lambda *args, **kwargs: None
+    try:
+        service.check_due(msk(hour=14))
+        assert storage.bump_baseline(gateway.item_id, msk(hour=14).timestamp()) == msk(hour=12).timestamp()
+        gateway.bump_premium = lambda *args, **kwargs: 25
+        service.check_due(msk(hour=14, minute=1))
+        assert storage.counts()['successful_bumps'] == 1
+    finally:
+        storage.close()

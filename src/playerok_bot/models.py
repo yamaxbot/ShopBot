@@ -51,6 +51,9 @@ class PaidDeal:
     id: str
     item_id: str
     chat_id: str | None
+    gross: int | float | None = None
+    occurred_at: str | None = None
+    status: str = 'paid'
 
 
 @dataclass(frozen=True, slots=True)

@@ -101,6 +101,9 @@ class Inventory:
 
     def snapshot(self, lot_id: str, credentials: list[Credential], active: bool):
         """Резервировать фактически присутствующий товар. Пропавшее — в карантин."""
+        if self.storage.ownership:
+            self.storage.ownership.claim_lots('funpay', [lot_id])
+            self.storage.ownership.claim_accounts(credentials)
         fingerprints = {c.fingerprint for c in credentials}
         if len(fingerprints) != len(credentials) or len({c.login.casefold() for c in credentials}) != len(credentials):
             raise StorageError('В FunPay-лоте повторяются аккаунты')

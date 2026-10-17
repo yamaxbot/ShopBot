@@ -19,6 +19,8 @@ class Profile:
     last_notified: int
     config: dict = field(repr=False)
     funpay_id: str | None = None
+    group_id: int = 1
+    group_name: str = "Основная"
 
 
 class Profiles:
@@ -53,6 +55,29 @@ class Profiles:
             self.connection.execute('ALTER TABLE profiles ADD COLUMN funpay_id TEXT')
         self.connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS unique_funpay_owner ON profiles(funpay_id)')
         self.connection.commit()
+        if not self.connection.execute("SELECT 1 FROM sqlite_master WHERE name='product_groups'").fetchone():
+            backup = sqlite3.connect(self.root / 'profiles.before-groups.sqlite3')
+            try:
+                self.connection.backup(backup)
+            finally:
+                backup.close()
+        self.connection.executescript("""
+            CREATE TABLE IF NOT EXISTS product_groups (
+                user_id INTEGER NOT NULL REFERENCES profiles(user_id),
+                group_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                config BLOB NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                last_notified INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(user_id, group_id), UNIQUE(user_id, name)
+            );
+            CREATE TABLE IF NOT EXISTS selected_groups (
+                user_id INTEGER PRIMARY KEY, group_id INTEGER NOT NULL DEFAULT 1
+            );
+        """)
+        with self.connection:
+            self.connection.execute("INSERT OR IGNORE INTO product_groups SELECT user_id,1,'Основная',config,enabled,last_notified FROM profiles")
+            self.connection.execute("INSERT OR IGNORE INTO selected_groups SELECT user_id,1 FROM profiles")
 
     def close(self):
         self.connection.close()
@@ -62,38 +87,84 @@ class Profiles:
         if not isinstance(user_id, int) or user_id <= 0 or user_id >= 2**63:
             raise ConfigurationError("Некорректный Telegram ID")
 
-    def user_dir(self, user_id: int) -> Path:
+    def user_dir(self, user_id: int, group_id: int = 1) -> Path:
         self.validate_user_id(user_id)
         result = self.root / "users" / str(user_id)
+        if group_id != 1:
+            if not isinstance(group_id, int) or group_id < 1:
+                raise ConfigurationError("Некорректная группа")
+            result = result / 'groups' / str(group_id)
         result.mkdir(parents=True, exist_ok=True)
         return result
 
-    def storage(self, user_id: int) -> Storage:
-        return Storage(self.user_dir(user_id) / "inventory.sqlite3")
+    def storage(self, user_id: int, group_id: int | None = None) -> Storage:
+        profile = self.get(user_id, group_id)
+        return Storage(self.user_dir(user_id, profile.group_id) / "inventory.sqlite3",
+                       registry=self.user_dir(user_id) / 'ownership.sqlite3', group_id=profile.group_id)
 
     def _encode(self, config: dict) -> bytes:
         return self.cipher.encrypt(json.dumps(config, ensure_ascii=False).encode())
 
-    def _profile(self, row) -> Profile:
-        return Profile(row["user_id"], row["playerok_id"], bool(row["enabled"]), row["last_notified"],
-                       {**self.defaults(), **json.loads(self.cipher.decrypt(row["config"]).decode())}, row['funpay_id'])
-
     @staticmethod
     def defaults():
         return {"cookies": "", "user_agent": "", "items": [], "price_limit": 50, "bump": True,
-                "funpay_key": "", "funpay_agent": "", "funpay_items": []}
+                "funpay_key": "", "funpay_agent": "", "funpay_items": [],
+                "playerok_fee": 0, "funpay_fee": 0,
+                "playerok_withdrawal": 3, "funpay_withdrawal": 6}
 
-    def get(self, user_id: int) -> Profile:
+    def get(self, user_id: int, group_id: int | None = None) -> Profile:
         self.validate_user_id(user_id)
         with self.connection:
-            self.connection.execute(
-                "INSERT OR IGNORE INTO profiles(user_id, config) VALUES (?, ?)",
-                (user_id, self._encode(self.defaults())),
-            )
-        return self._profile(self.connection.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,)).fetchone())
+            self.connection.execute("INSERT OR IGNORE INTO profiles(user_id,config) VALUES (?,?)",
+                                    (user_id, self._encode(self.defaults())))
+            self.connection.execute("INSERT OR IGNORE INTO product_groups SELECT user_id,1,'Основная',config,enabled,last_notified FROM profiles WHERE user_id=?", (user_id,))
+            self.connection.execute("INSERT OR IGNORE INTO selected_groups VALUES (?,1)", (user_id,))
+        if group_id is None:
+            group_id = self.connection.execute('SELECT group_id FROM selected_groups WHERE user_id=?', (user_id,)).fetchone()[0]
+        row = self.connection.execute('SELECT * FROM profiles WHERE user_id=?', (user_id,)).fetchone()
+        group = self.connection.execute('SELECT * FROM product_groups WHERE user_id=? AND group_id=?', (user_id, group_id)).fetchone()
+        if group is None:
+            raise ConfigurationError('Группа не найдена. Список — /groups')
+        auth = json.loads(self.cipher.decrypt(row['config']).decode())
+        config = {**self.defaults(), **json.loads(self.cipher.decrypt(group['config']).decode())}
+        for key in ('cookies', 'user_agent', 'funpay_key', 'funpay_agent'):
+            config[key] = auth.get(key, '')
+        return Profile(user_id, row['playerok_id'], bool(group['enabled']), group['last_notified'],
+                       config, row['funpay_id'], group_id, group['name'])
+
+    def groups(self, user_id: int) -> list[Profile]:
+        self.get(user_id)
+        return [self.get(user_id, row[0]) for row in self.connection.execute(
+            'SELECT group_id FROM product_groups WHERE user_id=? ORDER BY group_id', (user_id,)).fetchall()]
 
     def all(self) -> list[Profile]:
-        return [self._profile(row) for row in self.connection.execute("SELECT * FROM profiles ORDER BY user_id")]
+        return [self.get(row[0], row[1]) for row in self.connection.execute(
+            'SELECT user_id,group_id FROM product_groups ORDER BY user_id,group_id').fetchall()]
+
+    def create_group(self, user_id: int, name: str) -> Profile:
+        self.get(user_id)
+        for group in self.groups(user_id):
+            storage = self.storage(user_id, group.group_id)
+            storage.close()
+        name = name.strip()
+        if not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
+            raise ConfigurationError('Название группы: от 1 до 60 символов')
+        if len(self.groups(user_id)) >= 30:
+            raise ConfigurationError('Можно создать не больше 30 групп')
+        try:
+            with self.connection:
+                group_id = self.connection.execute('SELECT COALESCE(MAX(group_id),0)+1 FROM product_groups WHERE user_id=?', (user_id,)).fetchone()[0]
+                self.connection.execute('INSERT INTO product_groups(user_id,group_id,name,config) VALUES (?,?,?,?)',
+                                        (user_id, group_id, name, self._encode(self.defaults())))
+                self.connection.execute('UPDATE selected_groups SET group_id=? WHERE user_id=?', (group_id, user_id))
+        except sqlite3.IntegrityError:
+            raise ConfigurationError('Группа с таким названием уже существует') from None
+        return self.get(user_id)
+
+    def select_group(self, user_id: int, group_id: int):
+        self.get(user_id, group_id)
+        with self.connection:
+            self.connection.execute('UPDATE selected_groups SET group_id=? WHERE user_id=?', (group_id, user_id))
 
     def connect(self, user_id: int, playerok_id: str, cookies: str, user_agent: str):
         profile = self.get(user_id)
@@ -110,12 +181,20 @@ class Profiles:
             raise ConfigurationError("Этот профиль Playerok уже подключён к другому пользователю бота") from exc
 
     def update(self, user_id: int, **changes):
-        if set(changes) - {"items", "price_limit", "bump", "funpay_items"}:
+        if set(changes) - {"items", "price_limit", "bump", "funpay_items", "playerok_fee", "funpay_fee", "playerok_withdrawal", "funpay_withdrawal"}:
             raise ConfigurationError("Неизвестный параметр профиля")
         profile = self.get(user_id)
+        from ..ownership import Ownership
+        ownership = Ownership(self.user_dir(user_id) / 'ownership.sqlite3', profile.group_id)
+        for key, platform in (('items', 'playerok'), ('funpay_items', 'funpay')):
+            if key in changes:
+                for other in self.groups(user_id):
+                    if other.group_id != profile.group_id and set(changes[key]) & set(other.config[key]):
+                        raise ConfigurationError(f'Объявление уже закреплено за группой «{other.group_name}»')
+                ownership.claim_lots(platform, changes[key])
         with self.connection:
-            self.connection.execute("UPDATE profiles SET config = ?, enabled = 0 WHERE user_id = ?",
-                                    (self._encode({**profile.config, **changes}), user_id))
+            self.connection.execute("UPDATE product_groups SET config = ?, enabled = 0 WHERE user_id = ? AND group_id=?",
+                                    (self._encode({**profile.config, **changes}), user_id, profile.group_id))
 
     def connect_funpay(self, user_id: int, funpay_id: str, key: str, user_agent: str):
         profile = self.get(user_id)
@@ -129,11 +208,12 @@ class Profiles:
         except sqlite3.IntegrityError:
             raise ConfigurationError('Этот FunPay уже подключён к другому пользователю бота') from None
 
-    def set_enabled(self, user_id: int, enabled: bool):
-        self.get(user_id)
+    def set_enabled(self, user_id: int, enabled: bool, group_id: int | None = None):
+        profile = self.get(user_id, group_id)
         with self.connection:
-            self.connection.execute("UPDATE profiles SET enabled = ? WHERE user_id = ?", (int(enabled), user_id))
+            self.connection.execute("UPDATE product_groups SET enabled = ? WHERE user_id = ? AND group_id=?", (int(enabled), user_id, profile.group_id))
 
-    def mark_notified(self, user_id: int, count: int):
+    def mark_notified(self, user_id: int, count: int, group_id: int | None = None):
+        profile = self.get(user_id, group_id)
         with self.connection:
-            self.connection.execute("UPDATE profiles SET last_notified = ? WHERE user_id = ?", (count, user_id))
+            self.connection.execute("UPDATE product_groups SET last_notified = ? WHERE user_id = ? AND group_id=?", (count, user_id, profile.group_id))
