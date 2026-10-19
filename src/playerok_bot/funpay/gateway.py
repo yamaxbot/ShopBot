@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import os
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit, urljoin
 
@@ -19,8 +20,7 @@ from ..errors import ConfigurationError, BotError
 from ..models import Credential
 
 
-class FunPayError(BotError):
-    pass
+from .rate_limit import FunPayError, FunPayRateLimited, RequestLimit
 
 
 class FunPayRejected(FunPayError):
@@ -91,13 +91,16 @@ class FunPayGateway:
         self.username = None
         self.csrf = None
         self._node_games: dict[str, str] = {}
+        self.rate_limit = RequestLimit(os.environ.get('FUNPAY_RATE_DB'))
 
     def close(self):
         self.session.close()
+        self.rate_limit.close()
 
     def request(self, method, path, **kwargs):
         url = 'https://funpay.com/' + path
         for _ in range(4):
+            self.rate_limit.acquire()
             try:
                 response = self.session.request(method, url, timeout=(10, 30),
                                                 allow_redirects=False, **kwargs)
@@ -110,8 +113,11 @@ class FunPayGateway:
             if parsed.scheme != 'https' or parsed.netloc != 'funpay.com' or parsed.path.endswith('/account/login'):
                 raise FunPayError('FunPay перенаправил запрос на вход; обновите golden_key')
             kwargs = {}
+        if response.status_code == 429:
+            raise self.rate_limit.limited(response.headers.get('Retry-After'))
         if response.status_code != 200:
-            raise FunPayError(f'FunPay вернул HTTP {response.status_code}; проверьте авторизацию')
+            hint = '; проверьте авторизацию' if response.status_code in {401,403} else ''
+            raise FunPayError(f'FunPay вернул HTTP {response.status_code}{hint}')
         return response
 
     def soup(self, response):

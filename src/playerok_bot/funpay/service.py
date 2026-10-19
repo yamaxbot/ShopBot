@@ -8,7 +8,7 @@ from ..accounts import parse_accounts_text
 from ..errors import BotError
 from ..inventory import Inventory
 from ..storage import _utc_now
-from .gateway import FunPayError, FunPayRejected
+from .gateway import FunPayError, FunPayRejected, FunPayRateLimited
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,8 @@ class FunPayService:
                 actual = self.gateway.read(operation['lot_id'])
                 if self._finish(operation, actual):
                     continue
+            except FunPayRateLimited:
+                raise
             except Exception as exc:
                 logger.warning('Сверка изменения FunPay %s: %s', operation['id'], type(exc).__name__)
             blocked.add(operation['lot_id'])
@@ -124,11 +126,13 @@ class FunPayService:
         after = [c.fingerprint for c in desired]
         if current.fingerprints == after and current.active == active and (kind != 'format' or current.delivery_formatted):
             return self._observe(current)
+        if hasattr(self.gateway, 'rate_limit'):
+            self.gateway.rate_limit.check()
         edit_id = self.inventory.prepare_edit(current.id, kind, current.fingerprints, after, active)
         self.inventory.mark_edit(edit_id, 'sent')
         try:
             self.gateway.save(current, desired, active)
-        except FunPayRejected:
+        except (FunPayRejected, FunPayRateLimited):
             self.inventory.mark_edit(edit_id, 'done')
             raise
         except Exception as exc:
@@ -138,6 +142,9 @@ class FunPayService:
             actual = self.gateway.read(current.id)
             if self._finish(operation, actual):
                 return actual
+        except FunPayRateLimited:
+            self.inventory.mark_edit(edit_id, 'uncertain')
+            raise
         except Exception as exc:
             logger.warning('Проверка сохранения FunPay %s: %s', edit_id, type(exc).__name__)
         self.inventory.mark_edit(edit_id, 'uncertain')
@@ -174,7 +181,8 @@ class FunPayService:
                 self.activate(lot)
             return
         self.refill_stage = 'проверка отключения лота'
-        lot = self.freeze(lot)
+        if lot.active:
+            lot = self.freeze(lot)
         if lot.active:
             raise FunPayError('FunPay-лот остался активным; пополнение отменено')
         staged = self.inventory.accounts(lot_id)
@@ -251,6 +259,8 @@ class FunPayService:
         blocked = self.recover()
         try:
             self.sync_sales()
+        except FunPayRateLimited:
+            raise
         except Exception as exc:
             logger.warning('Сверка продаж FunPay временно не выполнена: %s', type(exc).__name__)
         # Сначала наблюдать ВСЕ лоты: их существующий товар не может попасть в очередь.
@@ -270,6 +280,8 @@ class FunPayService:
                 detail = f'{self.refill_stage}: {reason}'
                 self.inventory.storage.set_state_text('fp_refill_error:' + lot_id, detail)
                 logger.warning('Пополнение FunPay-лота %s: %s', lot_id, detail)
+                if isinstance(exc, FunPayRateLimited):
+                    break
                 blocked.update(self.recover())
             else:
                 self.inventory.storage.set_state_text('fp_refill_error:' + lot_id, '')

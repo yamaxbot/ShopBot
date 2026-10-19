@@ -6,12 +6,13 @@ import logging
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 
 from ..app import BotApplication
 from ..config import Settings
 from ..errors import ConfigurationError, InventoryNotReadyError
-from ..funpay.gateway import FunPayError, FunPayGateway
+from ..funpay.gateway import FunPayError, FunPayGateway, FunPayRateLimited
 from ..funpay.service import FunPayService
 from ..inventory import Inventory
 from ..logging_setup import configure_logging
@@ -21,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 def run():
+    # Startup can also hit 429. Preserve enabled workers and retry after the shared pause.
+    while True:
+        try:
+            return _run_once()
+        except FunPayRateLimited as exc:
+            logger.warning('Запуск FunPay отложен: %s', exc)
+            while time.time() < exc.until:
+                time.sleep(max(0, min(5, exc.until - time.time())))
+
+
+def _run_once():
     directory = Path.cwd()
     configure_logging(directory / 'marketplaces.log')
     storage = Storage(Path(os.environ['DATABASE_PATH']))
@@ -89,9 +101,13 @@ def run():
             if service:
                 try:
                     service.reconcile_once()
+                except FunPayRateLimited as exc:
+                    storage.set_state_text('fp_refill_error:pause', str(exc))
+                    logger.warning('Проверка FunPay: %s', exc)
                 except Exception as exc:
                     logger.warning('Проверка FunPay: %s', type(exc).__name__)
                 else:
+                    storage.set_state_text('fp_refill_error:pause', '')
                     try:
                         service.raise_when_available()
                     except FunPayError as exc:

@@ -83,6 +83,7 @@ class Workers:
             accounts.write_text("# Аккаунты загружаются в личную SQLite-базу через Telegram\n", encoding="utf-8")
         env = worker_environment(profile, directory)
         env['OWNERSHIP_PATH'] = str(self.profiles.user_dir(profile.user_id) / 'ownership.sqlite3')
+        env['FUNPAY_RATE_DB'] = str(self.profiles.root / 'funpay_rate.sqlite3')
         return directory, env
 
     async def probe(self, profile: Profile, mode="check") -> dict:

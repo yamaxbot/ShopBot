@@ -390,7 +390,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         text = ('Несверенные изменения:\n' + '\n'.join(lines[:30]) + '\nБот сверит их автоматически. Не загружайте те же аккаунты вручную. Порядок ручной сверки описан в README.') if lines else 'Несверенных изменений FunPay нет.'
         if errors:
             text += '\n\nПоследние ошибки пополнения:\n' + '\n'.join(
-                f"Лот {row['key'].split(':', 1)[1]} ({row['updated_at']}): {row['value']}" for row in errors[:8])
+                f"{'Общая пауза FunPay' if row['key'].endswith(':pause') else 'Лот ' + row['key'].split(':', 1)[1]} ({row['updated_at']}): {row['value']}" for row in errors[:8])
         await reply(message, text[:4000])
 
     @router.message(Command("connect"))
