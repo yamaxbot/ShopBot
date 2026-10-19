@@ -91,3 +91,21 @@ def test_unknown_funpay_removal_does_not_release_accounts(tmp_path):
     assert len(gateway.calls) == 1
     assert withdrawal.payload(db)[1] == 1
     db.close()
+
+
+def test_sold_playerok_lot_requires_confirmed_local_sale(tmp_path):
+    db = Storage(tmp_path/'db')
+    credential = Credential('already-sold','secret')
+    db.import_accounts([credential])
+    item = SimpleNamespace(user=SimpleNamespace(id='owner'),status=ItemStatuses.SOLD,keep_in_sale=False)
+    gateway = SimpleNamespace(item_id='lot',account=SimpleNamespace(id='owner'),resolve_listing=lambda:item,
+                              current_credential=lambda _:credential,recent_paid_deals=lambda:[])
+    with pytest.raises(ConfigurationError):
+        withdrawal.prepare_remote(db,[gateway])
+    assert withdrawal.state(db) != 'ready'
+    assert db.counts()['queued'] == 1
+    with db._transaction() as connection:
+        connection.execute("UPDATE accounts SET status='sold'")
+    withdrawal.prepare_remote(db,[gateway])
+    assert withdrawal.payload(db)[1] == 0
+    db.close()

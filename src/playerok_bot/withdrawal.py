@@ -53,8 +53,15 @@ def prepare_remote(storage, playerok_gateways, funpay_service=None):
             raise ConfigurationError('Playerok: лот принадлежит другому продавцу.')
         listed = storage.get_listed_account(gateway.item_id)
         if item.status is ItemStatuses.SOLD and listed is None:
-            # An exhausted, already reconciled listing has no unsold account to withdraw.
-            continue
+            credential = gateway.current_credential(item)
+            with storage._lock:
+                known_sale = credential and storage._connection.execute(
+                    "SELECT 1 FROM accounts WHERE fingerprint=? AND status='sold'",
+                    (credential.fingerprint,),
+                ).fetchone()
+            if known_sale:
+                continue
+            raise ConfigurationError('Продажа Playerok ещё не подтверждена в базе. Сначала выполните сверку; выгрузка остановлена.')
         if item.status not in {ItemStatuses.DRAFT, ItemStatuses.EXPIRED, ItemStatuses.DECLINED, ItemStatuses.BLOCKED}:
             raise ConfigurationError('Снимите объявления Playerok с продажи вручную. Проданные и ожидающие модерации лоты выгружать нельзя.')
         if getattr(item, 'keep_in_sale', False):

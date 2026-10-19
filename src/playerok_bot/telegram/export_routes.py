@@ -93,6 +93,8 @@ def register_export(router, profiles, workers):
                 else:
                     file_id = ''
                 withdrawal.finish(storage, file_id)
+            if withdrawal.state(storage) != 'delivered':
+                raise ConfigurationError('Отправка склада не подтверждена. Повторите выгрузку; данные сохранены.')
             # Keep the group locked if either file cleanup or configuration write fails.
             source = profiles.user_dir(group.user_id, group.group_id) / 'accaunts.txt'
             # On retry after delivery, keep any newly added file data rather than erase it.
