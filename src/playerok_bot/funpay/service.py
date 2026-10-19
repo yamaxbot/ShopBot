@@ -21,6 +21,7 @@ class FunPayService:
         self.gateway = gateway
         self.lots = lots
         self.node_id = None
+        self.refill_stage = ''
 
     def check(self):
         if self.gateway.id is None:
@@ -151,9 +152,11 @@ class FunPayService:
         return self.edit(lot, lot.credentials, bool(lot.credentials), 'activate')
 
     def refill(self, lot_id):
+        self.refill_stage = 'чтение лота'
         lot = self._observe(self.gateway.read(lot_id))
         staged = self.inventory.accounts(lot_id)
         if lot.credentials and not lot.delivery_formatted:
+            self.refill_stage = 'форматирование автовыдачи'
             # Уже загруженные аккаунты тоже переводим на одну строку с подписями.
             lot = self.freeze(lot)
             if not lot.delivery_formatted:
@@ -161,21 +164,27 @@ class FunPayService:
         if len(lot.credentials) >= self.TARGET and not staged:
             # Восстановление после падения между загрузкой и активацией.
             if not lot.active:
+                self.refill_stage = 'активация заполненного лота'
                 self.activate(lot)
             return
         if not staged and not self.inventory.stats()['free']:
             # Склад пуст: не трогаем действующий остаток и ждём новых аккаунтов.
             if not lot.active and lot.credentials:
+                self.refill_stage = 'активация остатка'
                 self.activate(lot)
             return
+        self.refill_stage = 'проверка отключения лота'
         lot = self.freeze(lot)
         if lot.active:
             raise FunPayError('FunPay-лот остался активным; пополнение отменено')
         staged = self.inventory.accounts(lot_id)
+        self.refill_stage = 'резервирование аккаунтов'
         need = max(0, self.TARGET - len(lot.credentials) - len(staged))
         staged += self.inventory.reserve(lot_id, need)
         desired = lot.credentials + [a.credential for a in staged]
+        self.refill_stage = 'загрузка аккаунтов'
         lot = self.edit(lot, desired, False, 'refill')
+        self.refill_stage = 'активация после загрузки'
         self.activate(lot)
 
     def sync_sales(self):
@@ -256,5 +265,11 @@ class FunPayService:
             try:
                 self.refill(lot_id)
             except Exception as exc:
-                logger.warning('Пополнение FunPay-лота %s: %s', lot_id, type(exc).__name__)
+                # FunPayError contains our own safe messages, never raw API responses.
+                reason = str(exc) if isinstance(exc, FunPayError) else type(exc).__name__
+                detail = f'{self.refill_stage}: {reason}'
+                self.inventory.storage.set_state_text('fp_refill_error:' + lot_id, detail)
+                logger.warning('Пополнение FunPay-лота %s: %s', lot_id, detail)
                 blocked.update(self.recover())
+            else:
+                self.inventory.storage.set_state_text('fp_refill_error:' + lot_id, '')

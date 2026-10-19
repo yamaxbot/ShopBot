@@ -382,10 +382,16 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         storage = profiles.storage(message.from_user.id)
         try:
             operations = Inventory(storage).pending_edits()
+            with storage._lock:
+                errors = storage._connection.execute("SELECT key,value,updated_at FROM bot_state WHERE key LIKE 'fp_refill_error:%' AND value!='' ORDER BY key").fetchall()
         finally:
             storage.close()
         lines = [f"№{op['id']}: лот {op['lot_id']}, {op['status']}" for op in operations]
-        await reply(message, ('Несверенные изменения:\n' + '\n'.join(lines[:30]) + '\nБот сверит их автоматически. Не загружайте те же аккаунты вручную. Порядок ручной сверки описан в README.') if lines else 'Несверенных изменений FunPay нет.')
+        text = ('Несверенные изменения:\n' + '\n'.join(lines[:30]) + '\nБот сверит их автоматически. Не загружайте те же аккаунты вручную. Порядок ручной сверки описан в README.') if lines else 'Несверенных изменений FunPay нет.'
+        if errors:
+            text += '\n\nПоследние ошибки пополнения:\n' + '\n'.join(
+                f"Лот {row['key'].split(':', 1)[1]} ({row['updated_at']}): {row['value']}" for row in errors[:8])
+        await reply(message, text[:4000])
 
     @router.message(Command("connect"))
     async def connect(message: Message, state: FSMContext):

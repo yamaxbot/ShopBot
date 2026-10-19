@@ -548,3 +548,39 @@ def test_adapter_handles_same_site_locale_redirect(monkeypatch):
     gateway.request('GET', '?setlocale=ru')
     assert calls == ['https://funpay.com/?setlocale=ru', 'https://funpay.com/']
     gateway.close()
+
+
+def test_refill_error_before_reservation_is_visible_and_clears_on_success(storage, monkeypatch, caplog):
+    storage.import_accounts(accounts(6))
+    gateway = Gateway({'1': []})
+    service = FunPayService(storage, gateway, ['1'])
+    original = gateway.read
+    calls = 0
+    def read(lot):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise FunPayError('FunPay вернул HTTP 429; проверьте авторизацию')
+        return original(lot)
+    monkeypatch.setattr(gateway, 'read', read)
+    service.reconcile_once()
+    row = storage._connection.execute("SELECT value FROM bot_state WHERE key='fp_refill_error:1'").fetchone()
+    assert 'чтение лота' in row[0] and '429' in row[0]
+    assert '429' in caplog.text
+    assert not Inventory(storage).pending_edits()
+    assert Inventory(storage).stats()['free'] == 6
+    service.reconcile_once()
+    assert storage._connection.execute("SELECT value FROM bot_state WHERE key='fp_refill_error:1'").fetchone()[0] == ''
+    assert len(gateway.lots['1'].credentials) == 5 and gateway.lots['1'].active
+
+
+def test_unexpected_refill_error_does_not_log_secret(storage, monkeypatch, caplog):
+    gateway = Gateway({'1': []})
+    service = FunPayService(storage, gateway, ['1'])
+    def fail(lot):
+        raise ValueError('private-password-cookie')
+    monkeypatch.setattr(service, 'refill', fail)
+    service.reconcile_once()
+    error = storage._connection.execute("SELECT value FROM bot_state WHERE key='fp_refill_error:1'").fetchone()[0]
+    assert 'ValueError' in error
+    assert 'private-password-cookie' not in error + caplog.text
