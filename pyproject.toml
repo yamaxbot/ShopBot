@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "car-parking-playerok-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Telegram-бот для групп аккаунтов Playerok и FunPay со статистикой продаж"
 readme = "README.md"
 requires-python = ">=3.11"

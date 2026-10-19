@@ -23,6 +23,17 @@ def record_stage(stage: str) -> None:
 
 def main():
     logging.disable(logging.CRITICAL)
+    if len(sys.argv) > 1 and sys.argv[1] == 'withdraw':
+        try:
+            from ..withdrawal import run_from_environment
+            run_from_environment()
+            print(json.dumps({'ok': True}))
+        except BotError as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}, ensure_ascii=False))
+        except Exception as exc:
+            print(json.dumps({'ok': False, 'error': 'Выгрузка не подтверждена: ' + type(exc).__name__}))
+        return
+    logging.disable(logging.CRITICAL)
     app = None
     funpay = None
     try:

@@ -99,6 +99,7 @@ class Storage:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS withdrawn_fingerprints (fingerprint TEXT PRIMARY KEY);
 
                 CREATE TABLE IF NOT EXISTS restocks (
                     source_deal_id TEXT PRIMARY KEY REFERENCES deals(deal_id),
@@ -180,6 +181,8 @@ class Storage:
         now = _utc_now()
         with self._transaction() as connection:
             for credential in credentials:
+                if connection.execute('SELECT 1 FROM withdrawn_fingerprints WHERE fingerprint=?', (credential.fingerprint,)).fetchone():
+                    raise StorageError('Аккаунт уже выведен со склада. Повторная автоматическая продажа заблокирована.')
                 conflict = connection.execute(
                     'SELECT 1 FROM accounts WHERE lower(login)=lower(?) AND fingerprint!=?',
                     (credential.login, credential.fingerprint),

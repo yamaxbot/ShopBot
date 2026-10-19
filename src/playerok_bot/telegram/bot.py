@@ -45,7 +45,8 @@ class Setup(StatesGroup):
 
 def start_text():
     return (
-        "Бот пополняет ваши лоты Playerok и FunPay. У каждого пользователя свой склад.\n\n"
+        "ShopBot автоматизирует продажу игровых аккаунтов на Playerok и FunPay: пополняет лоты, поднимает их и считает продажи. У каждого пользователя свой склад и группы товаров.\n\n"
+        "Использование платное: /subscription — текущая цена и срок, /subscribe — оплата Stars. Продление вручную, без автосписаний. /terms — условия.\n\n"
         "1. Создайте объявления и группу: /group_new Название. Старый склад — в «Основной».\n"
         "2. Подключите Playerok: /connect → /items, или FunPay: /fp_connect → /fp_items. Можно обе площадки.\n"
         "3. Отправьте аккаунты в формате логин:пароль, каждый с новой строки, или файлом .txt. Для Playerok добавьте и данные текущих лотов.\n"
@@ -60,6 +61,11 @@ def commands_text():
         "Команды бота\n\n"
         "Основные\n"
         "/start — короткая инструкция по запуску.\n"
+        "/subscription — доступ и тариф. /subscribe — оплатить Stars.\n"
+        "/payments — мои платежи. /terms — условия. /paysupport или /support — поддержка оплаты.\n"
+        "/export — забрать непроданный склад группы; /export_confirm ID — подтвердить.\n"
+        "/export_cancel — отменить до подготовки файла. /export_file — последний файл.\n"
+        "/admin — команды администратора: /set_price, /admin_payments, /refund.\n"
         "/commands — все команды. /help — как работает бот и что означают статусы.\n"
         "/groups — список групп. /group ID — выбрать группу.\n"
         "/group_new Название — создать и выбрать группу.\n"
@@ -133,15 +139,23 @@ class PrivateAccess(BaseMiddleware):
     async def __call__(self, handler, event: Message, data):
         if event.chat.type != ChatType.PRIVATE or not event.from_user or event.from_user.is_bot:
             return
-        if self.allowed_ids and event.from_user.id not in self.allowed_ids:
+        if self.allowed_ids and event.from_user.id not in self.allowed_ids and not (event.successful_payment or event.refunded_payment):
             await event.answer("Доступ ограничен владельцем бота.", reply_markup=ReplyKeyboardRemove())
             return
         return await handler(event, data)
 
 
-def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettings):
+def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettings, billing=None):
     router = Router(name="personal_playerok")
-    router.message.outer_middleware(PrivateAccess(settings.allowed_user_ids))
+    router.message.outer_middleware(PrivateAccess(settings.allowed_user_ids | settings.admin_ids if settings.allowed_user_ids else frozenset()))
+    from .export_routes import ExportAccess, register_export
+    router.message.outer_middleware(ExportAccess(profiles))
+    if billing:
+        from .billing import SubscriptionAccess
+        from .payment_routes import register_payments
+        router.message.outer_middleware(SubscriptionAccess(billing))
+        register_payments(router, billing, workers, settings)
+    register_export(router, profiles, workers)
 
     async def reply(message: Message, text: str, **kwargs):
         kwargs.setdefault('reply_markup', ReplyKeyboardRemove())
@@ -179,6 +193,8 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         await state.clear()
         profiles.get(message.from_user.id)
         await reply(message, start_text())
+        if billing:
+            await reply(message, billing.summary(message.from_user.id))
 
     @router.message(Command("commands"))
     @router.message(F.text == "Команды")
@@ -606,9 +622,11 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
 
 async def run(settings: TelegramSettings):
     profiles = Profiles(settings.data_dir)
-    workers = Workers(profiles, settings.max_workers)
+    from .billing import Billing
+    billing = Billing(profiles, settings.admin_ids)
+    workers = Workers(profiles, settings.max_workers, billing)
     dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
-    dispatcher.include_router(create_router(profiles, workers, settings))
+    dispatcher.include_router(create_router(profiles, workers, settings, billing))
     session = AiohttpSession(proxy=settings.proxy) if settings.proxy else None
     async with Bot(token=settings.token, session=session) as bot:
         monitor = None
@@ -620,6 +638,11 @@ async def run(settings: TelegramSettings):
                 ("stats", "Моя статистика"), ("check", "Проверить лоты"),
                 ("run", "Запустить продажи"), ("stop", "Остановить продажи"),
                 ("help", "Как работает бот и что означают статусы"),
+                ("subscription", "Моя подписка и тариф"), ("subscribe", "Оплатить Stars"),
+                ("payments", "Мои платежи"), ("terms", "Условия подписки"),
+                ("paysupport", "Поддержка оплаты"), ("support", "Поддержка"),
+                ("export", "Забрать непроданный склад группы"), ("export_confirm", "Подтвердить выгрузку"),
+                ("export_cancel", "Отменить подготовку выгрузки"), ("export_file", "Последний файл выгрузки"),
                 ("groups", "Группы товаров"), ("group", "Выбрать группу"),
                 ("group_new", "Создать группу"), ("group_rename", "Переименовать группу"),
                 ("daily", "Статистика по дням"), ("allstats", "Все группы за всё время"),

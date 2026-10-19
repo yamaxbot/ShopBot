@@ -22,6 +22,7 @@ class TelegramSettings:
     max_workers: int = 20
     allowed_user_ids: frozenset[int] = frozenset()
     proxy: str | None = None
+    admin_ids: frozenset[int] = frozenset()
 
     @classmethod
     def load(cls, root: Path | None = None, *, require_token=True):
@@ -36,8 +37,9 @@ class TelegramSettings:
         try:
             workers = int(os.getenv("TELEGRAM_MAX_WORKERS", "20"))
             ids = frozenset(int(part.strip()) for part in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if part.strip())
+            admins = frozenset(int(part.strip()) for part in os.getenv("TELEGRAM_ADMIN_IDS", "").strip('[]').split(",") if part.strip())
         except ValueError as exc:
             raise ConfigurationError("Telegram ID и TELEGRAM_MAX_WORKERS должны быть числами") from exc
-        if workers < 1 or any(uid <= 0 for uid in ids):
+        if workers < 1 or any(uid <= 0 for uid in ids | admins):
             raise ConfigurationError("Некорректные Telegram ID или число процессов")
-        return cls(token, path.resolve(), workers, ids, os.getenv('TELEGRAM_PROXY', '').strip() or None)
+        return cls(token, path.resolve(), workers, ids, os.getenv('TELEGRAM_PROXY', '').strip() or None, admins)

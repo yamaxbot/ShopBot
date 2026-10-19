@@ -91,6 +91,12 @@ class FunPayService:
             removed = [f for f in json.loads(operation['before_json']) if f not in after]
             self.inventory.transfer(operation['lot_id'], kind.split(':', 1)[1], removed)
         self._observe(actual)
+        if kind == 'withdraw':
+            if actual.active or actual.credentials:
+                return False
+            with self.inventory.storage._transaction() as db:
+                for fingerprint in json.loads(operation['before_json']):
+                    db.execute("DELETE FROM allocations WHERE platform='funpay' AND lot_id=? AND account_id IN (SELECT id FROM accounts WHERE fingerprint=? AND status='queued')", (operation['lot_id'], fingerprint))
         self.inventory.mark_edit(operation['id'], 'done')
         return True
 

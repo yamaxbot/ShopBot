@@ -66,9 +66,10 @@ def worker_environment(profile: Profile, directory: Path) -> dict[str, str]:
 
 
 class Workers:
-    def __init__(self, profiles: Profiles, max_workers: int):
+    def __init__(self, profiles: Profiles, max_workers: int, billing=None):
         self.profiles = profiles
         self.max_workers = max_workers
+        self.billing = billing
         self.processes: dict[tuple[int, int], asyncio.subprocess.Process] = {}
         self.lock = asyncio.Lock()
         self.revisions: dict[tuple[int, int], int] = {}
@@ -155,6 +156,8 @@ class Workers:
         return result
 
     async def start(self, user_id: int):
+        if self.billing:
+            self.billing.require_active(user_id)
         if self.running(user_id):
             return
         profile = self.profiles.get(user_id)
@@ -173,6 +176,14 @@ class Workers:
             self.profiles.set_enabled(user_id, True, profile.group_id)
 
     async def _spawn(self, profile: Profile):
+        if self.billing:
+            self.billing.require_active(profile.user_id)
+        from ..withdrawal import assert_idle
+        storage = self.profiles.storage(profile.user_id, profile.group_id)
+        try:
+            assert_idle(storage)
+        finally:
+            storage.close()
         directory, env = self.environment(profile)
         with (directory / "console.log").open("ab") as output:
             process = await asyncio.create_subprocess_exec(
@@ -228,6 +239,9 @@ class Workers:
     async def restore(self):
         for profile in self.profiles.all():
             if profile.enabled:
+                if self.billing and not self.billing.active(profile.user_id):
+                    self.profiles.set_enabled(profile.user_id, False, profile.group_id)
+                    continue
                 if len(self.processes) >= self.max_workers:
                     self.profiles.set_enabled(profile.user_id, False, profile.group_id)
                 else:
@@ -239,6 +253,10 @@ class Workers:
             for profile in self.profiles.all():
                 try:
                     key = (profile.user_id, profile.group_id)
+                    if self.billing and profile.enabled and not self.billing.active(profile.user_id):
+                        await self.stop(profile.user_id, profile.group_id)
+                        await bot.send_message(profile.user_id, 'Подписка закончилась: обслуживание группы остановлено. Продлить: /subscribe. Объявления на сайтах остаются; снимите их вручную для остановки продаж.')
+                        continue
                     process = self.processes.get(key)
                     if process is not None and process.returncode is not None:
                         self.processes.pop(key)

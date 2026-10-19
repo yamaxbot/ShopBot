@@ -109,6 +109,8 @@ class Inventory:
             raise StorageError('В FunPay-лоте повторяются аккаунты')
         with self.storage._transaction() as db:
             for credential in credentials:
+                if db.execute('SELECT 1 FROM withdrawn_fingerprints WHERE fingerprint=?', (credential.fingerprint,)).fetchone():
+                    raise StorageError('В лоте найден аккаунт, ранее выведенный со склада.')
                 row = db.execute('SELECT * FROM accounts WHERE fingerprint=?', (credential.fingerprint,)).fetchone()
                 if row is None:
                     if db.execute('SELECT 1 FROM accounts WHERE lower(login)=lower(?)', (credential.login,)).fetchone():
