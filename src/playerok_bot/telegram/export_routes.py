@@ -38,7 +38,7 @@ def register_export(router, profiles, workers):
             '3. Не меняйте лоты на сайтах во время выгрузки.\n'
             '\nЧто произойдёт\nБот очистит автовыдачу неактивных лотов FunPay, пришлёт .txt и удалит выданные логины и пароли из рабочего склада. '
             'Ссылки этой группы будут убраны из настроек; объявления Playerok не удаляются. Данные в старых резервных копиях не стираются.\n'
-            f'\nПодтвердить: /export_confirm {group.group_id}\nПодробнее: /help export')
+            f'\nПодтвердить: /export_confirm {group.group_id}\nПодробнее: /help → «Забрать непроданные аккаунты»')
 
     @router.message(Command('export_file'))
     async def export_file(message: Message):

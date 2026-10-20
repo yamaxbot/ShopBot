@@ -88,7 +88,7 @@ def register_payments(router, billing, workers, settings):
             billing.require_admin(message.from_user.id)
             parts = (command.args or '').split()
             if command.command == 'admin':
-                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПолный возврат\n/refund НОМЕР — проверить сумму и получателя.\n/refund НОМЕР confirm — подтвердить возврат Stars.\nСрок этого платежа исключается из подписки.\n\nПодробности: /help admin')
+                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПолный возврат\n/refund НОМЕР — проверить сумму и получателя.\n/refund НОМЕР confirm — подтвердить возврат Stars.\nСрок этого платежа исключается из подписки.\n\nПодробности: /help → «Администратор»')
             elif command.command == 'set_price':
                 if not 1 <= len(parts) <= 2:
                     raise ValueError()
