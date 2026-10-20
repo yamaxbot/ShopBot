@@ -43,7 +43,7 @@ class Billing:
 
     def require_admin(self, user_id):
         if user_id not in self.admin_ids:
-            raise ConfigurationError('Команда доступна только администратору.')
+            raise ConfigurationError('Команда недоступна.')
 
     def until(self, user_id):
         end = 0
@@ -130,7 +130,7 @@ class Billing:
     def refunded(self, user_id, payment):
         row = self.db.execute('SELECT * FROM star_payments WHERE charge_id=?', (payment.telegram_payment_charge_id,)).fetchone()
         if not row or row['user_id'] != user_id or row['stars'] != payment.total_amount or payment.currency != 'XTR':
-            raise ConfigurationError('Неизвестный возврат: требуется сверка администратора.')
+            raise ConfigurationError('Неизвестный возврат: обратитесь в /paysupport.')
         with self.db:
             self.db.execute("UPDATE star_payments SET status='refunded' WHERE id=?", (row['id'],))
 

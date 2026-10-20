@@ -5,10 +5,6 @@ from ..errors import BotError, ConfigurationError
 
 
 def register_payments(router, billing, workers, settings):
-    def support():
-        contacts = ' '.join(f'tg://user?id={uid}' for uid in sorted(settings.admin_ids))
-        return '💬 Поддержка оплаты\n\nОбратитесь к администратору:\n' + (contacts or 'Контакт пока не настроен владельцем бота.') + '\n\nУкажите номер платежа из /payments и кратко опишите проблему.\nПароли и cookie присылать не нужно.\n\nВозврат оформляет администратор бота; поддержка Telegram не обрабатывает обращения по этим покупкам.'
-
     @router.message(Command('subscription'))
     async def subscription(message: Message):
         await message.answer(billing.summary(message.from_user.id))
@@ -20,13 +16,27 @@ def register_payments(router, billing, workers, settings):
             'Оплата и продление\nОплата разовая, без автоматического списания. Новый срок добавляется к действующему. '
             'Расходы площадок оплачиваются отдельно.\n\nПосле окончания срока\nБот прекращает обслуживание; '
             'уже опубликованные лоты и встроенная выдача FunPay остаются на сайтах до ручного отключения. '
-            'Выгрузка склада и статистика доступны без подписки.\n\nВозвраты и поддержка\nПри полном возврате оплаченный этим платежом срок исключается из подписки. '
-            'Работа зависит от доступности площадок. Поддержка и возвраты: /paysupport.\n\n'
+            'Выгрузка склада и статистика доступны без подписки.\n\nУсловия оплаты\nВозврат оплаты подписки по запросу пользователя не предусмотрен. '
+            'Работа зависит от доступности площадок. Вопросы по оплате: /paysupport.\n\n'
             'Если согласны с условиями, получите счёт:\n/subscribe agree')
 
     @router.message(Command('support','paysupport'))
-    async def paysupport(message: Message):
-        await message.answer(support())
+    async def paysupport(message: Message, command: CommandObject):
+        text = (command.args or '').strip()
+        if not text:
+            await message.answer('💬 Помощь с оплатой\n\nОтправьте /paysupport и описание проблемы в одном сообщении. Укажите номер платежа из /payments.\nПароли, cookie и токены отправлять не нужно.')
+            return
+        if len(text) > 3000:
+            await message.answer('Сократите описание до 3000 символов.')
+            return
+        delivered = False
+        for user_id in sorted(settings.admin_ids):
+            try:
+                await message.bot.send_message(user_id, f'Обращение по оплате от пользователя {message.from_user.id}:\n\n{text}', parse_mode=None)
+                delivered = True
+            except Exception:
+                continue
+        await message.answer('Обращение передано в поддержку.' if delivered else 'Не удалось передать обращение. Повторите позже.')
 
     @router.message(Command('subscribe'))
     async def subscribe(message: Message, command: CommandObject):
@@ -34,7 +44,7 @@ def register_payments(router, billing, workers, settings):
             await terms(message)
             return
         if not settings.admin_ids:
-            await message.answer('Оплата пока недоступна: владелец ещё не настроил администраторов поддержки. Попробуйте позже.')
+            await message.answer('Оплата временно недоступна. Попробуйте позже.')
             return
         payload, plan = billing.invoice(message.from_user.id)
         await message.answer_invoice(title='Подписка ShopBot', description=f"Автоматизация ваших групп Playerok и FunPay на {plan['days']} дней. Без автопродления.",
@@ -82,35 +92,18 @@ def register_payments(router, billing, workers, settings):
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Формат: /admin_payments TELEGRAM_ID')
 
-    @router.message(Command('admin','set_price','refund'))
+    @router.message(Command('admin','set_price'))
     async def admin(message: Message, command: CommandObject):
         try:
             billing.require_admin(message.from_user.id)
             parts = (command.args or '').split()
             if command.command == 'admin':
-                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПолный возврат\n/refund НОМЕР — проверить сумму и получателя.\n/refund НОМЕР confirm — подтвердить возврат Stars.\nСрок этого платежа исключается из подписки.\n\nПодробности: /help → «Администратор»')
+                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПодробности: /help → «Администратор»')
             elif command.command == 'set_price':
                 if not 1 <= len(parts) <= 2:
                     raise ValueError()
                 billing.set_plan(message.from_user.id, int(parts[0]), int(parts[1]) if len(parts)==2 else billing.plan()['days'])
                 plan = billing.plan()
                 await message.answer(f"Новый тариф: {plan['stars']} Stars за {plan['days']} дней.")
-            else:
-                if not 1 <= len(parts) <= 2:
-                    raise ValueError()
-                row = billing.payment(int(parts[0]))
-                if len(parts)==1:
-                    await message.answer(f"Вернуть {row['stars']} Stars пользователю {row['user_id']} за платёж №{row['id']}? Оплаченный этим платежом срок будет исключён.\nПодтвердить: /refund {row['id']} confirm")
-                    return
-                if parts[1] != 'confirm':
-                    raise ValueError()
-                try:
-                    await billing.refund(message.bot, message.from_user.id, row['id'])
-                finally:
-                    if not billing.active(row['user_id']):
-                        await workers.stop_all(row['user_id'])
-                await message.answer(f"Возврат платежа №{row['id']} подтверждён Telegram.")
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Неверный формат. Подсказка: /admin')
-        except Exception:
-            await message.answer('Ответ Telegram не подтверждён. Повторите ту же команду возврата; запись платежа сохранена.')

@@ -145,7 +145,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
     @router.message(Command("commands"))
     @router.message(F.text == "Команды")
     async def commands(message: Message):
-        await reply(message, commands_text())
+        await reply(message, commands_text(is_admin=message.from_user.id in settings.admin_ids))
 
     @router.message(Command("help"))
     async def help_command(message: Message):
@@ -170,7 +170,10 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         if len(parts) != 3 or parts[1] != str(query.from_user.id) or parts[2] not in {*TOPICS, 'index'}:
             await query.answer('Откройте справку заново: /help.')
             return
-        text = help_text(parts[2])
+        if parts[2] == 'admin' and query.from_user.id not in settings.admin_ids:
+            await query.answer('Раздел недоступен.')
+            return
+        text = help_text(parts[2], is_admin=query.from_user.id in settings.admin_ids)
         await query.answer()
         if query.message.text != text:
             await query.message.edit_text(text, reply_markup=help_keyboard(query.from_user.id))

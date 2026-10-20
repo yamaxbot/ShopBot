@@ -29,7 +29,7 @@ class Session(BaseSession):
         raise AssertionError(type(method))
 
 
-def test_real_router_paywall_checkout_receipt_and_admin_refund(tmp_path):
+def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
     async def scenario():
         profiles = Profiles(tmp_path)
         billing = Billing(profiles,frozenset({1}))
@@ -51,6 +51,19 @@ def test_real_router_paywall_checkout_receipt_and_admin_refund(tmp_path):
             assert billing.plan()['stars'] == 100
             await send(1,'/set_price 150 10')
             assert billing.plan() == {'stars':150,'days':10}
+            await send(2, '/commands')
+            assert '/admin' not in session.calls[-1].text
+            assert '/refund' not in session.calls[-1].text
+            await send(1, '/commands')
+            assert '/admin_payments' in session.calls[-1].text
+            assert '/refund' not in session.calls[-1].text
+            await send(2, '/paysupport')
+            assert 'tg://user' not in session.calls[-1].text
+            assert 'администратор' not in session.calls[-1].text.lower()
+            await send(2, '/paysupport Платёж не появился')
+            assert session.calls[-2].chat_id == 1
+            assert 'Платёж не появился' in session.calls[-2].text
+            assert 'передано' in session.calls[-1].text
             await send(2,'/subscribe agree')
             invoice=session.calls[-1]
             assert isinstance(invoice,SendInvoice) and invoice.currency=='XTR'
@@ -73,6 +86,9 @@ def test_real_router_paywall_checkout_receipt_and_admin_refund(tmp_path):
             await send(2,'/refund 1 confirm')
             assert billing.active(2)
             await send(1,'/refund 1 confirm')
+            assert billing.active(2)
+            assert not any(isinstance(call, RefundStarPayment) for call in session.calls)
+            await send(2, refunded_payment={key: value for key, value in receipt.items() if key != 'provider_payment_charge_id'})
             assert not billing.active(2)
             workers.stop_all.assert_awaited_with(2)
             await send(2,'/export')

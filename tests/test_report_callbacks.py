@@ -60,6 +60,7 @@ def test_report_callbacks_reject_other_owner_and_keep_original_group(tmp_path):
             before = len(session.edits)
             await send('guide:202:funpay')
             await send('guide:101:unknown')
+            await send('guide:101:admin')
             assert len(session.edits) == before
             await send('guide:101:funpay')
             assert 'HTTP 429' in session.edits[-1]
@@ -81,3 +82,12 @@ def test_all_commands_are_documented_and_texts_fit_telegram():
                     'daily', 'allstats', 'stop_all', 'bump_status'):
         assert '/' + command in commands_text()
     assert help_text() != commands_text()
+
+
+def test_public_help_does_not_expose_admin_commands():
+    for text in (start_text(), commands_text(), help_text(), help_text('subscription'), help_text('admin')):
+        assert 'администратор' not in text.lower()
+        assert '/admin' not in text
+        assert '/refund' not in text
+    assert '/set_price' in commands_text(is_admin=True)
+    assert '/set_price' in help_text('admin', is_admin=True)
