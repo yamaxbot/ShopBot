@@ -32,13 +32,13 @@ def register_export(router, profiles, workers):
     @router.message(Command('export'))
     async def export(message: Message):
         group = profiles.get(message.from_user.id)
-        await message.answer(f'Выгрузка непроданных аккаунтов группы «{group.group_name}» (№{group.group_id}).\n'
+        await message.answer(f'📤 Забрать аккаунты\nГруппа «{group.group_name}» · №{group.group_id}\n\nПеред выгрузкой\n'
             '1. Выполните /stop и вручную снимите её лоты с продажи на обеих площадках. Не удаляйте ссылки из настроек.\n'
             '2. Завершите текущие сделки и сверку карантина.\n'
             '3. Не меняйте лоты на сайтах во время выгрузки.\n'
-            'Бот очистит автовыдачу неактивных лотов FunPay, пришлёт .txt и удалит выданные логины и пароли из рабочего склада. '
+            '\nЧто произойдёт\nБот очистит автовыдачу неактивных лотов FunPay, пришлёт .txt и удалит выданные логины и пароли из рабочего склада. '
             'Ссылки этой группы будут убраны из настроек; объявления Playerok не удаляются. Данные в старых резервных копиях не стираются.\n'
-            f'Подтвердить: /export_confirm {group.group_id}')
+            f'\nПодтвердить: /export_confirm {group.group_id}\nПодробнее: /help export')
 
     @router.message(Command('export_file'))
     async def export_file(message: Message):

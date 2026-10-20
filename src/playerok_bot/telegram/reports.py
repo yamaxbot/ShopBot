@@ -28,9 +28,9 @@ def report_page(profiles, user_id, group_id, day=None):
                 totals[key] += part[key]
     title = 'Все группы' if group_id == 0 else f'Группа «{groups[0].group_name}»'
     period = day.strftime('%d.%m.%Y') if day else 'За всё время'
-    text = f'{title}\n{period}\n\n' + render_report(totals)
-    text += (f"\n\nСклад сейчас: свободно {stock_totals['free']}, резерв Playerok {stock_totals['playerok_reserve']}, "
-             f"выставлено Playerok {listed}, FunPay {stock_totals['funpay_listed']}, карантин {stock_totals['funpay_unknown']}.")
+    text = f'📊 {title}\n{period}\n\n' + render_report(totals)
+    text += (f"\n\n📦 Склад сейчас\nСвободно: {stock_totals['free']}\nРезерв Playerok: {stock_totals['playerok_reserve']}\n"
+             f"Выставлено Playerok: {listed}\nВ лотах FunPay: {stock_totals['funpay_listed']}\nКарантин: {stock_totals['funpay_unknown']}\n\nКак читать отчёт: /help stats")
     today = datetime.now(MSK).date()
     def button(label, target):
         return InlineKeyboardButton(text=label, callback_data=f'report:{user_id}:{group_id}:{target}')

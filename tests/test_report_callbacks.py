@@ -9,7 +9,7 @@ from aiogram.types import Update, Message
 from playerok_bot.finance import MSK
 from playerok_bot.telegram.bot import create_router, commands_text, start_text
 from playerok_bot.telegram.config import TelegramSettings
-from playerok_bot.telegram.help_text import help_text
+from playerok_bot.telegram.help_text import help_text, TOPICS
 from playerok_bot.telegram.profiles import Profiles
 from playerok_bot.telegram.workers import Workers
 
@@ -57,6 +57,13 @@ def test_report_callbacks_reject_other_owner_and_keep_original_group(tmp_path):
             await send('report:101:1:' + datetime.now(MSK).date().isoformat())
             assert 'Основная' in session.edits[-1]
             assert profiles.get(101).group_id == 2
+            before = len(session.edits)
+            await send('guide:202:funpay')
+            await send('guide:101:unknown')
+            assert len(session.edits) == before
+            await send('guide:101:funpay')
+            assert 'HTTP 429' in session.edits[-1]
+            assert profiles.get(101).group_id == 2
         finally:
             await bot.session.close()
             await dispatcher.storage.close()
@@ -65,7 +72,7 @@ def test_report_callbacks_reject_other_owner_and_keep_original_group(tmp_path):
 
 
 def test_all_commands_are_documented_and_texts_fit_telegram():
-    for text in (start_text(), commands_text(), help_text()):
+    for text in (start_text(), commands_text(), help_text(), *(help_text(key) for key in TOPICS)):
         assert len(text) <= 4096
     for command in ('start', 'commands', 'help', 'settings', 'add', 'check', 'run',
                     'stop', 'stats', 'status', 'cancel', 'connect', 'items', 'limit',

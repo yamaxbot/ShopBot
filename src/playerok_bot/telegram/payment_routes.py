@@ -7,7 +7,7 @@ from ..errors import BotError, ConfigurationError
 def register_payments(router, billing, workers, settings):
     def support():
         contacts = ' '.join(f'tg://user?id={uid}' for uid in sorted(settings.admin_ids))
-        return 'По вопросам оплаты и возврата обратитесь к администратору: ' + (contacts or 'контакт пока не настроен владельцем бота.') + '\nУкажите номер из /payments. Telegram не обрабатывает обращения по покупкам у этого бота.'
+        return '💬 Поддержка оплаты\n\nОбратитесь к администратору:\n' + (contacts or 'Контакт пока не настроен владельцем бота.') + '\n\nУкажите номер платежа из /payments и кратко опишите проблему.\nПароли и cookie присылать не нужно.\n\nВозврат оформляет администратор бота; поддержка Telegram не обрабатывает обращения по этим покупкам.'
 
     @router.message(Command('subscription'))
     async def subscription(message: Message):
@@ -16,13 +16,13 @@ def register_payments(router, billing, workers, settings):
     @router.message(Command('terms'))
     async def terms(message: Message):
         plan = billing.plan()
-        await message.answer(f"Доступ к автоматизации Playerok и FunPay: {plan['stars']} Stars за {plan['days']} дней для всех ваших групп. "
-            'Оплата разовая, без автоматического списания. Новый срок добавляется к действующему. '
-            'Расходы площадок оплачиваются отдельно. После истечения бот прекращает обслуживание; '
+        await message.answer(f"⭐ Условия подписки\n\nТариф: {plan['stars']} Stars за {plan['days']} дней.\nДоступ ко всем вашим группам Playerok и FunPay.\n\n"
+            'Оплата и продление\nОплата разовая, без автоматического списания. Новый срок добавляется к действующему. '
+            'Расходы площадок оплачиваются отдельно.\n\nПосле окончания срока\nБот прекращает обслуживание; '
             'уже опубликованные лоты и встроенная выдача FunPay остаются на сайтах до ручного отключения. '
-            'Выгрузка склада и статистика доступны без подписки. При полном возврате оплаченный срок исключается из подписки. '
-            'Работа зависит от доступности площадок. Поддержка и возвраты: /paysupport. '
-            'Для согласия с условиями и получения счёта: /subscribe agree.')
+            'Выгрузка склада и статистика доступны без подписки.\n\nВозвраты и поддержка\nПри полном возврате оплаченный этим платежом срок исключается из подписки. '
+            'Работа зависит от доступности площадок. Поддержка и возвраты: /paysupport.\n\n'
+            'Если согласны с условиями, получите счёт:\n/subscribe agree')
 
     @router.message(Command('support','paysupport'))
     async def paysupport(message: Message):
@@ -34,7 +34,7 @@ def register_payments(router, billing, workers, settings):
             await terms(message)
             return
         if not settings.admin_ids:
-            await message.answer('Оплата пока недоступна: владелец должен настроить TELEGRAM_ADMIN_IDS.')
+            await message.answer('Оплата пока недоступна: владелец ещё не настроил администраторов поддержки. Попробуйте позже.')
             return
         payload, plan = billing.invoice(message.from_user.id)
         await message.answer_invoice(title='Подписка ShopBot', description=f"Автоматизация ваших групп Playerok и FunPay на {plan['days']} дней. Без автопродления.",
@@ -77,7 +77,8 @@ def register_payments(router, billing, workers, settings):
                 if user_id <= 0:
                     raise ValueError()
             rows = billing.db.execute('SELECT id,stars,days,status FROM star_payments WHERE user_id=? ORDER BY id DESC LIMIT 30', (user_id,)).fetchall()
-            await message.answer('Последние платежи:\n' + ('\n'.join(f"№{r['id']}: {r['stars']} Stars / {r['days']} дней — {r['status']}" for r in rows) or 'Платежей нет.'))
+            statuses = {'paid': 'оплачен', 'refund_pending': 'возврат ожидает подтверждения', 'refunded': 'возвращён'}
+            await message.answer('🧾 Последние платежи\n\n' + ('\n\n'.join(f"№{r['id']} · {r['stars']} Stars · {r['days']} дней\n{statuses.get(r['status'], 'требует сверки')}" for r in rows) or 'Платежей пока нет. Оплатить доступ: /subscribe') + '\n\nВопрос по платежу: /paysupport')
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Формат: /admin_payments TELEGRAM_ID')
 
@@ -87,7 +88,7 @@ def register_payments(router, billing, workers, settings):
             billing.require_admin(message.from_user.id)
             parts = (command.args or '').split()
             if command.command == 'admin':
-                await message.answer('/set_price ЗВЁЗДЫ [ДНИ] — тариф для новых счетов.\n/admin_payments TELEGRAM_ID — платежи пользователя.\n/refund НОМЕР — информация и подтверждение полного возврата.\nИзменение тарифа не меняет уже оплаченный срок.')
+                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПолный возврат\n/refund НОМЕР — проверить сумму и получателя.\n/refund НОМЕР confirm — подтвердить возврат Stars.\nСрок этого платежа исключается из подписки.\n\nПодробности: /help admin')
             elif command.command == 'set_price':
                 if not 1 <= len(parts) <= 2:
                     raise ValueError()

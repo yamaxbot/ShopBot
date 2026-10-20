@@ -1,7 +1,8 @@
 """Durable Stars invoices, prepaid access and full refunds."""
 import time
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
+from ..finance import MSK
 
 from aiogram import BaseMiddleware
 from ..errors import ConfigurationError
@@ -61,8 +62,9 @@ class Billing:
         plan = self.plan()
         end = self.until(user_id)
         state = 'Администратор: доступ без оплаты.' if user_id in self.admin_ids else (
-            'Оплачено до ' + datetime.fromtimestamp(end, timezone.utc).strftime('%d.%m.%Y %H:%M UTC') if end > time.time() else 'Подписка не активна.')
-        return f"{state}\nТариф: {plan['stars']} Stars за {plan['days']} дней. Продление вручную: /subscribe."
+            'Оплачено до ' + datetime.fromtimestamp(end, MSK).strftime('%d.%m.%Y %H:%M МСК') if end > time.time() else 'Подписка не активна.')
+        return (f"⭐ Подписка ShopBot\n\n{state}\nТариф: {plan['stars']} Stars за {plan['days']} дней.\n"
+                'Доступ действует на все ваши группы.\n\nПродление вручную: /subscribe\nАвтоматических списаний нет.\nПлатежи: /payments · Условия: /terms')
 
     def invoice(self, user_id):
         plan = self.plan()
