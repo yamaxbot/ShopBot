@@ -53,8 +53,46 @@ def account_help():
         "mail@example.com|password\n\n"
         "Можно блоком:\nЛогин: mail@example.com\nПароль: password\n\n"
         "Несколько аккаунтов — каждый с новой строки или отдельным блоком. "
-        "Добавляйте только непроданные аккаунты, включая данные текущих лотов."
+        "Добавляйте только непроданные аккаунты, включая данные текущих лотов.\n\n"
+        "Ссылки на объявления сюда не отправляйте: для них /items (Playerok) и /fp_items (FunPay)."
     )
+
+
+_LINK_CANDIDATE = re.compile(
+    r"https?://[^\s\"'<>]+|(?<![\w.@/-])(?:www\.)?(?:funpay|playerok)\.com/[^\s\"'<>]*", re.I
+)
+_MARKETPLACES = (("FunPay", "funpay.com"), ("Playerok", "playerok.com"))
+
+
+def marketplace_links(text: str) -> set[str]:
+    """Площадки, на объявления которых ссылается текст."""
+    found = set()
+    for match in _LINK_CANDIDATE.finditer(text):
+        value = match.group(0)
+        try:
+            host = (urlsplit(value if "://" in value else "https://" + value).hostname or "").lower()
+        except ValueError:
+            continue
+        for platform, domain in _MARKETPLACES:
+            if host == domain or host.endswith("." + domain):
+                found.add(platform)
+    return found
+
+
+def link_hint(text: str) -> str | None:
+    """Подсказка вместо импорта, если вместо аккаунтов прислали ссылку на лот."""
+    platforms = marketplace_links(text)
+    if not platforms:
+        return None
+    lines = ["🔗 В сообщении есть ссылка на объявление\n\nСсылки не принимаются как аккаунты, склад не изменён."]
+    if "FunPay" in platforms:
+        lines.append("FunPay: выполните /fp_items и отправьте все ссылки одним сообщением, каждую с новой строки. "
+                     "Новый список заменяет прежний.")
+    if "Playerok" in platforms:
+        lines.append("Playerok: выполните /items и отправьте все ссылки одним сообщением, каждую с новой строки. "
+                     "Новый список заменяет прежний.")
+    lines.append("Аккаунты отправляйте отдельным сообщением без ссылок. Форматы: /add")
+    return "\n\n".join(lines)
 
 
 def parse_items(text: str) -> list[str]:
@@ -112,6 +150,10 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             await message.delete()
 
     async def import_text(message: Message, text: str):
+        hint = link_hint(text)
+        if hint:
+            await reply(message, hint)
+            return
         try:
             accounts = parse_accounts_text(text)
             if len(accounts) > 10000:
