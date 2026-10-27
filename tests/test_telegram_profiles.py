@@ -178,7 +178,8 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert '/bump on' in session.responses[-1][1]
             await send(101, 'Команды')
             assert 'Команды бота' in session.responses[-1][1]
-            await send(101, "first@example.test:secret-one")
+            await send(101, "/add first@example.test:secret-one")
+            await send(202, "/add")
             await send(202, "Логин second@example.test Пароль secret-two")
             await send(303, "group@example.test:secret-three", group=True)
             # Два пользователя одновременно проходят разные шаги настройки.
@@ -238,7 +239,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert 'Playerok-лоты убраны' in session.responses[-1][1]
             await send(101, '/group_new Second game')
             assert profiles.get(101).group_id == 2
-            await send(101, 'second-game@example.test:pass')
+            await send(101, '/add second-game@example.test:pass')
             await send(101, '/group 1')
             storage = profiles.storage(101)
             assert storage.counts()['queued'] == 1

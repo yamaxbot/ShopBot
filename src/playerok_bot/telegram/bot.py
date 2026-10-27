@@ -42,56 +42,74 @@ class Setup(StatesGroup):
     limit = State()
     funpay_key = State()
     funpay_items = State()
+    accounts = State()
 
 
 def account_help():
     return (
-        "📥 Добавить аккаунты\n\nАккаунты попадут в выбранную группу из /settings.\nОтправьте сообщение или файл .txt в UTF-8. Примеры:\n\n"
+        "📥 Добавить аккаунты\n\nАккаунты попадут в выбранную группу из /settings.\n"
+        "Отправьте их следующим сообщением или файлом .txt в UTF-8. Примеры:\n\n"
         "mail@example.com:password\n"
         "Логин mail@example.com Пароль password\n"
         "login=mail@example.com password=password\n"
         "mail@example.com|password\n\n"
         "Можно блоком:\nЛогин: mail@example.com\nПароль: password\n\n"
-        "Несколько аккаунтов — каждый с новой строки или отдельным блоком. "
+        "Несколько аккаунтов — каждый с новой строки или отдельным блоком. Больше сотни удобнее отправить файлом. "
         "Добавляйте только непроданные аккаунты, включая данные текущих лотов.\n\n"
-        "Ссылки на объявления сюда не отправляйте: для них /items (Playerok) и /fp_items (FunPay)."
+        "Можно и одной командой: /add mail@example.com:password\n"
+        "Ссылки на объявления сюда не отправляйте: для них /items (Playerok) и /fp_items (FunPay).\n"
+        "Отмена: /cancel"
     )
 
 
-_LINK_CANDIDATE = re.compile(
-    r"https?://[^\s\"'<>]+|(?<![\w.@/-])(?:www\.)?(?:funpay|playerok)\.com/[^\s\"'<>]*", re.I
+NOT_IMPORTED = (
+    "Сообщение не добавлено на склад.\n\n"
+    "Чтобы добавить аккаунты, отправьте /add, затем аккаунты следующим сообщением или файлом .txt. "
+    "Можно и одной командой: /add логин:пароль\n\nВсе команды: /commands"
 )
-_MARKETPLACES = (("FunPay", "funpay.com"), ("Playerok", "playerok.com"))
+
+# Хост площадки после http(s):// (с поддоменами), либо без схемы, но с путём после домена.
+# Хвост вроде «)» или «.» в конце не мешает, а funpay.com.evil.test не считается FunPay.
+_MARKETPLACE_LINK = re.compile(
+    r"https?://(?:[^\s/@]*@)?(?:[a-z0-9-]+\.)*(funpay|playerok)\.com(?![\w-]|\.[a-z0-9])"
+    r"|(?<![\w.@/-])(?:[a-z0-9-]+\.)*(funpay|playerok)\.com/",
+    re.I,
+)
+_PLATFORMS = {"funpay": "FunPay", "playerok": "Playerok"}
+# Значение целиком — ссылка (возможно, в скобках или кавычках), а не cookie.
+_LINK_VALUE = re.compile(
+    r"[(<\[\"'«]*(?:[a-z][a-z0-9+.\-]*://|www\.|(?:[a-z0-9-]+\.)*(?:funpay|playerok)\.com/)", re.I
+)
 
 
 def marketplace_links(text: str) -> set[str]:
     """Площадки, на объявления которых ссылается текст."""
-    found = set()
-    for match in _LINK_CANDIDATE.finditer(text):
-        value = match.group(0)
-        try:
-            host = (urlsplit(value if "://" in value else "https://" + value).hostname or "").lower()
-        except ValueError:
-            continue
-        for platform, domain in _MARKETPLACES:
-            if host == domain or host.endswith("." + domain):
-                found.add(platform)
-    return found
+    return {_PLATFORMS[(match.group(1) or match.group(2)).lower()] for match in _MARKETPLACE_LINK.finditer(text)}
 
 
-def link_hint(text: str) -> str | None:
-    """Подсказка вместо импорта, если вместо аккаунтов прислали ссылку на лот."""
-    platforms = marketplace_links(text)
-    if not platforms:
+def hidden_links(message: Message) -> list[str]:
+    """Адреса гиперссылок, спрятанных за текстом: в message.text их не видно."""
+    return [entity.url for entity in message.entities or () if entity.type == "text_link" and entity.url]
+
+
+def is_link(value: str) -> bool:
+    return bool(_LINK_VALUE.match(value.strip()))
+
+
+def link_hint(text: str, hidden: list[str] | tuple[str, ...] = ()) -> str | None:
+    """Подсказка вместо импорта, если в сообщении ссылка на лот или скрытая гиперссылка."""
+    platforms = marketplace_links("\n".join([text, *hidden]))
+    if not platforms and not hidden:
         return None
-    lines = ["🔗 В сообщении есть ссылка на объявление\n\nСсылки не принимаются как аккаунты, склад не изменён."]
+    title = "🔗 В сообщении есть ссылка на объявление" if platforms else "🔗 В сообщении есть гиперссылка"
+    lines = [title + "\n\nСсылки не принимаются как аккаунты, склад не изменён."]
     if "FunPay" in platforms:
         lines.append("FunPay: выполните /fp_items и отправьте все ссылки одним сообщением, каждую с новой строки. "
                      "Новый список заменяет прежний.")
     if "Playerok" in platforms:
         lines.append("Playerok: выполните /items и отправьте все ссылки одним сообщением, каждую с новой строки. "
                      "Новый список заменяет прежний.")
-    lines.append("Аккаунты отправляйте отдельным сообщением без ссылок. Форматы: /add")
+    lines.append("Аккаунты отправляйте простым текстом без ссылок: /add, затем аккаунты.")
     return "\n\n".join(lines)
 
 
@@ -149,11 +167,11 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         with suppress(Exception):
             await message.delete()
 
-    async def import_text(message: Message, text: str):
-        hint = link_hint(text)
+    async def import_text(message: Message, text: str) -> bool:
+        hint = link_hint(text, hidden_links(message))
         if hint:
             await reply(message, hint)
-            return
+            return False
         try:
             accounts = parse_accounts_text(text)
             if len(accounts) > 10000:
@@ -168,13 +186,14 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
                 storage.close()
         except BotError as exc:
             await reply(message, str(exc))
-            return
+            return False
         await erase(message)
         await reply(
             message,
             f"✅ Склад пополнен\nГруппа «{profiles.get(message.from_user.id).group_name}»\n\nДобавлено: {inserted}\nУже были в базе: {len(accounts) - inserted}\n"
-            f"Осталось: {counts['queued'] + counts['listed']}\n\nРаботающая группа подхватит запас автоматически.\nЕсли группа остановлена: /run · Остатки: /stats",
+            f"Осталось: {counts['queued'] + counts['listed']}\n\nРаботающая группа подхватит запас автоматически.\nЕсли группа остановлена: /run · Остатки: /stats\nЕщё аккаунты: /add",
         )
+        return True
 
     @router.message(Command("start"))
     async def start(message: Message, state: FSMContext):
@@ -520,20 +539,29 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         )
 
     @router.message(Command("add"))
-    async def add(message: Message, state: FSMContext, command: CommandObject):
+    @router.message(F.text == "Аккаунты")
+    async def add(message: Message, state: FSMContext, command: CommandObject | None = None):
         await state.clear()
-        if command.args:
+        if command and command.args:
             await import_text(message, command.args)
         else:
+            # Только после /add обычный текст считается аккаунтами: случайная фраза не попадёт на склад.
+            await state.set_state(Setup.accounts)
             await reply(message, account_help())
 
-    @router.message(F.text == "Аккаунты")
-    async def accounts_help(message: Message, state: FSMContext):
-        await state.clear()
-        await reply(message, account_help())
+    @router.message(Setup.accounts, F.text, ~F.text.startswith("/"))
+    async def receive_accounts(message: Message, state: FSMContext):
+        # Режим одноразовый; при ошибке остаётся, чтобы можно было исправить и отправить снова.
+        if await import_text(message, message.text):
+            await state.clear()
 
     @router.message(Setup.token, F.text)
     async def receive_token(message: Message, state: FSMContext):
+        if is_link(message.text) or hidden_links(message):
+            await reply(message, "🔗 Это ссылка, а не token\n\nОтправьте значение cookie token своего профиля Playerok: "
+                                 "браузер → F12 → Application → Cookies → playerok.com → token.\n"
+                                 "Объявления Playerok добавляются отдельно: /items.\nОтмена: /cancel")
+            return
         raw = message.text.strip().strip('"\'')
         if raw.startswith("PLAYEROK_TOKEN="):
             raw = raw.split("=", 1)[1].strip().strip('"\'')
@@ -553,6 +581,11 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
 
     @router.message(Setup.funpay_key, F.text)
     async def receive_fp_key(message: Message, state: FSMContext):
+        if is_link(message.text) or hidden_links(message):
+            await reply(message, "🔗 Это ссылка, а не golden_key\n\nОтправьте значение cookie golden_key: "
+                                 "браузер → F12 → Application → Cookies → funpay.com → golden_key.\n"
+                                 "Объявления FunPay добавляются отдельно: /fp_items.\nОтмена: /cancel")
+            return
         key = message.text.strip().strip('"\'')
         if key.startswith(('golden_key=', 'FUNPAY_GOLDEN_KEY=')):
             key = key.split('=', 1)[1].strip().strip('"\'')
@@ -583,7 +616,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             await reply(message, str(exc))
             return
         await state.clear()
-        await reply(message, 'FunPay-лоты сохранены. Добавьте запас аккаунтов, затем /fp_check и /run. Объявления и новые аккаунты относятся к выбранной группе (/settings).')
+        await reply(message, 'FunPay-лоты сохранены. Добавьте запас аккаунтов через /add, затем /fp_check и /run. Объявления и новые аккаунты относятся к выбранной группе (/settings).')
 
     @router.message(Setup.items, F.text)
     async def receive_items(message: Message, state: FSMContext):
@@ -599,7 +632,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             await reply(message, str(exc))
             return
         await state.clear()
-        await reply(message, "Playerok-лоты сохранены. Отправьте боту точные логины и пароли аккаунтов, уже указанных в этих лотах, и запас. Затем /check и /run.")
+        await reply(message, "Playerok-лоты сохранены. Добавьте через /add точные логины и пароли аккаунтов, уже указанных в этих лотах, и запас. Затем /check и /run.")
 
     @router.message(Setup.limit, F.text)
     async def receive_limit(message: Message, state: FSMContext):
@@ -617,7 +650,9 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
 
     @router.message(F.document)
     async def document(message: Message, state: FSMContext):
-        if await state.get_state() is not None:
+        # Файл .txt — явное действие, поэтому принимается и без /add.
+        current = await state.get_state()
+        if current not in (None, Setup.accounts.state):
             await reply(message, "Завершите настройку или выполните /cancel перед загрузкой файла.")
             return
         doc = message.document
@@ -631,7 +666,8 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         except UnicodeDecodeError:
             await reply(message, "Сохраните файл в UTF-8 и отправьте ещё раз.")
             return
-        await import_text(message, text)
+        if await import_text(message, text) and current is not None:
+            await state.clear()
 
     @router.message(F.text.startswith("/"))
     async def unknown(message: Message):
@@ -639,7 +675,8 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
 
     @router.message(F.text)
     async def text(message: Message):
-        await import_text(message, message.text)
+        # Обычный текст без /add на склад не попадает: иначе фраза из двух слов стала бы «логином и паролем».
+        await reply(message, link_hint(message.text, hidden_links(message)) or NOT_IMPORTED)
 
     @router.errors()
     async def error(event):

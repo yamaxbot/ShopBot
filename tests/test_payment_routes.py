@@ -79,7 +79,7 @@ def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
             end=billing.until(2)
             await send(2,successful_payment=receipt)
             assert billing.until(2)==end
-            await send(2,'secret:password')
+            await send(2,'/add secret:password')
             db=profiles.storage(2)
             assert db.counts()['queued']==1
             db.close()

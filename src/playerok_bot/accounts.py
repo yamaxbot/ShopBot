@@ -13,20 +13,19 @@ _LABELED = re.compile(rf"^{_LOGIN}\s*[:=]?\s*(\S+)\s+{_PASSWORD}\s*[:=]?\s*(.+)$
 _LOGIN_ONLY = re.compile(rf"^{_LOGIN}\s*[:=]?\s*(\S+)\s*$", re.I)
 _PASSWORD_ONLY = re.compile(rf"^{_PASSWORD}\s*[:=]?\s*(.+)$", re.I)
 # Ссылка «https://…» иначе разделилась бы по первому двоеточию на логин «https» и пароль «//…».
-_LINK = re.compile(r"[a-z][a-z0-9+.\-]*://", re.I)
-# В пароле допустимы любые символы, поэтому ссылкой считаем только http(s)://.
-_WEB_LINK = re.compile(r"https?://", re.I)
+# Ищем по всей строке: перед ссылкой может стоять скобка, кавычка или маркер списка.
+# Схемы перечислены явно, чтобы пароль вида «//…» после обычного логина не считался ссылкой.
+_LINK = re.compile(r"(?:https?|ftp|tg)://", re.I)
 
 
-def _link_error(line_number: int) -> AccountsFormatError:
-    return AccountsFormatError(f"Строка {line_number} похожа на ссылку, а не на логин и пароль")
+def _reject_link(text: str, line_number: int) -> None:
+    if _LINK.search(text):
+        raise AccountsFormatError(f"Строка {line_number} содержит ссылку. Ссылки не принимаются как логин и пароль")
 
 
 def _credential(login: str, password: str, line_number: int) -> Credential:
     if not login or not password:
         raise AccountsFormatError(f"Строка {line_number}: логин или пароль пуст")
-    if _LINK.match(login) or _WEB_LINK.match(password):
-        raise _link_error(line_number)
     return Credential(login=login, password=password)
 
 
@@ -34,8 +33,7 @@ def parse_account_line(line: str, line_number: int) -> Credential:
     text = line.strip()
     if not text or text.startswith("#"):
         raise AccountsFormatError(f"Строка {line_number} не содержит аккаунт")
-    if _LINK.match(text):
-        raise _link_error(line_number)
+    _reject_link(text, line_number)
 
     labeled = _LABELED.fullmatch(text)
     if labeled:
@@ -63,6 +61,7 @@ def parse_accounts_text(text: str) -> list[Credential]:
         line = raw.strip()
         if not line or line.startswith("#") or line in {"```", "```text", "```txt"}:
             continue
+        _reject_link(line, number)
         if pending_login is not None:
             password = _PASSWORD_ONLY.fullmatch(line)
             if password is None:
@@ -73,8 +72,6 @@ def parse_accounts_text(text: str) -> list[Credential]:
         login_only = _LOGIN_ONLY.fullmatch(line)
         if login_only:
             pending_login = login_only.group(1)
-            if _LINK.match(pending_login):
-                raise _link_error(number)
         else:
             result.append(parse_account_line(line, number))
     if pending_login is not None:
