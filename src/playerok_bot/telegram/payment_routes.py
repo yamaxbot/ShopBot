@@ -98,7 +98,7 @@ def register_payments(router, billing, workers, settings):
             billing.require_admin(message.from_user.id)
             parts = (command.args or '').split()
             if command.command == 'admin':
-                await message.answer('🔐 Управление ботом\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПодробности: /help → «Администратор»')
+                await message.answer('🔐 Управление ботом\n\nСтатистика\n/admin_stats — пользователи, подписки, оплаты и продажи за сегодня, 7 и 30 дней и всё время.\n\nТариф\n/set_price 100 30 — 100 Stars за 30 дней.\n/set_price 150 — изменить только цену.\nЦена: 1–10000 Stars; срок: 1–365 дней. Изменения относятся к новым счетам.\n\nПлатежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПодробности: /help → «Администратор»')
             elif command.command == 'set_price':
                 if not 1 <= len(parts) <= 2:
                     raise ValueError()
@@ -107,3 +107,14 @@ def register_payments(router, billing, workers, settings):
                 await message.answer(f"Новый тариф: {plan['stars']} Stars за {plan['days']} дней.")
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Неверный формат. Подсказка: /admin')
+
+    @router.message(Command('admin_stats'))
+    async def admin_stats(message: Message):
+        try:
+            billing.require_admin(message.from_user.id)
+        except BotError as exc:
+            await message.answer(str(exc))
+            return
+        from .admin_stats import admin_stats_text
+        running = {key for key, process in workers.processes.items() if process.returncode is None}
+        await message.answer(admin_stats_text(workers.profiles, billing, running))

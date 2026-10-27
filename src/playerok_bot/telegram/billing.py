@@ -138,7 +138,7 @@ class Billing:
 class SubscriptionAccess(BaseMiddleware):
     FREE = {'start','help','commands','subscribe','subscription','payments','terms','support','paysupport',
             'stop','stop_all','stats','status','daily','allstats','settings','groups','group','cancel','bump_status',
-            'export','export_confirm','export_cancel','export_file','admin','set_price','refund','admin_payments','fp_errors'}
+            'export','export_confirm','export_cancel','export_file','admin','set_price','refund','admin_payments','admin_stats','fp_errors'}
 
     def __init__(self, billing):
         self.billing = billing

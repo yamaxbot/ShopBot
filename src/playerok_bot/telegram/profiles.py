@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +54,9 @@ class Profiles:
         columns = {row[1] for row in self.connection.execute('PRAGMA table_info(profiles)')}
         if 'funpay_id' not in columns:
             self.connection.execute('ALTER TABLE profiles ADD COLUMN funpay_id TEXT')
+        if 'created_at' not in columns:
+            # Время первого обращения к боту (Unix). У пользователей до этой версии остаётся NULL.
+            self.connection.execute('ALTER TABLE profiles ADD COLUMN created_at INTEGER')
         self.connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS unique_funpay_owner ON profiles(funpay_id)')
         self.connection.commit()
         if not self.connection.execute("SELECT 1 FROM sqlite_master WHERE name='product_groups'").fetchone():
@@ -124,8 +128,8 @@ class Profiles:
     def get(self, user_id: int, group_id: int | None = None) -> Profile:
         self.validate_user_id(user_id)
         with self.connection:
-            self.connection.execute("INSERT OR IGNORE INTO profiles(user_id,config) VALUES (?,?)",
-                                    (user_id, self._encode(self.defaults())))
+            self.connection.execute("INSERT OR IGNORE INTO profiles(user_id,config,created_at) VALUES (?,?,?)",
+                                    (user_id, self._encode(self.defaults()), int(time.time())))
             self.connection.execute("INSERT OR IGNORE INTO product_groups SELECT user_id,1,'Основная',config,enabled,last_notified FROM profiles WHERE user_id=?", (user_id,))
             self.connection.execute("INSERT OR IGNORE INTO selected_groups VALUES (?,1)", (user_id,))
         if group_id is None:
