@@ -1,9 +1,25 @@
+import logging
+import time
+from datetime import datetime
+
 from aiogram import F
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
 from ..errors import BotError, ConfigurationError
+from ..finance import MSK
 from .billing import days_text
+
+logger = logging.getLogger(__name__)
+STATUSES = {'paid': 'оплачен', 'refund_pending': 'возврат ожидает подтверждения', 'refunded': 'возвращён'}
+
+
+def _moment(stamp):
+    return datetime.fromtimestamp(stamp, MSK).strftime('%d.%m.%Y %H:%M МСК')
+
+
+def _access(end):
+    return f'до {_moment(end)}' if end > time.time() else 'не активен'
 
 
 def register_payments(router, billing, workers, settings):
@@ -64,7 +80,7 @@ def register_payments(router, billing, workers, settings):
     async def paysupport(message: Message, command: CommandObject):
         text = (command.args or '').strip()
         if not text:
-            await message.answer('💬 Помощь с оплатой\n\nОтправьте /paysupport и описание проблемы в одном сообщении. Укажите номер платежа из /payments.\nПароли, cookie и токены отправлять не нужно.')
+            await message.answer('💬 Помощь с оплатой\n\nОтправьте /paysupport и описание проблемы в одном сообщении. Укажите ID операции из /payments — он есть и в чеке Telegram.\nПароли, cookie и токены отправлять не нужно.')
             return
         if len(text) > 3000:
             await message.answer('Сократите описание до 3000 символов.')
@@ -72,7 +88,9 @@ def register_payments(router, billing, workers, settings):
         delivered = False
         for user_id in sorted(settings.admin_ids):
             try:
-                await message.bot.send_message(user_id, f'Обращение по оплате от пользователя {message.from_user.id}:\n\n{text}', parse_mode=None)
+                await message.bot.send_message(user_id, f'Обращение по оплате от пользователя {message.from_user.id}:\n\n{text}\n\n'
+                                               f'Платежи пользователя: /admin_payments {message.from_user.id}\nВозврат: /refund ID_ОПЕРАЦИИ',
+                                               parse_mode=None)
                 delivered = True
             except Exception:
                 continue
@@ -113,7 +131,8 @@ def register_payments(router, billing, workers, settings):
         except BotError as exc:
             await message.answer(str(exc) + '\nСохраните чек Telegram и обратитесь через /paysupport.')
             return
-        await message.answer(f'Платёж №{payment_id} сохранён.\n' + billing.summary(message.from_user.id) + '\nЗапуск группы: /run.')
+        await message.answer(f'Платёж №{payment_id} сохранён.\nID операции: {message.successful_payment.telegram_payment_charge_id}\n\n'
+                             + billing.summary(message.from_user.id) + '\nЗапуск группы: /run.')
 
     @router.message(F.refunded_payment)
     async def refunded(message: Message):
@@ -131,9 +150,12 @@ def register_payments(router, billing, workers, settings):
                 user_id = int(command.args or '0')
                 if user_id <= 0:
                     raise ValueError()
-            rows = billing.db.execute('SELECT id,stars,days,status FROM star_payments WHERE user_id=? ORDER BY id DESC LIMIT 30', (user_id,)).fetchall()
-            statuses = {'paid': 'оплачен', 'refund_pending': 'возврат ожидает подтверждения', 'refunded': 'возвращён'}
-            await message.answer('🧾 Последние платежи\n\n' + ('\n\n'.join(f"№{r['id']} · {r['stars']} Stars · {days_text(r['days'])}\n{statuses.get(r['status'], 'требует сверки')}" for r in rows) or 'Платежей пока нет. Оплатить доступ: /subscribe') + '\n\nВопрос по платежу: /paysupport')
+            rows = billing.db.execute('SELECT id,charge_id,stars,days,paid_at,status FROM star_payments WHERE user_id=? ORDER BY id DESC LIMIT 30', (user_id,)).fetchall()
+            text = '\n\n'.join(f"№{r['id']} · {r['stars']} Stars · {days_text(r['days'])} · {_moment(r['paid_at'])}\n"
+                               f"{STATUSES.get(r['status'], 'требует сверки')}\nID операции: {r['charge_id']}" for r in rows)
+            footer = ('\n\nВозврат: /refund ID_ОПЕРАЦИИ' if command.command == 'admin_payments'
+                      else '\n\nВопрос по платежу: /paysupport — укажите ID операции.')
+            await message.answer(('🧾 Последние платежи\n\n' + (text or 'Платежей пока нет. Оплатить доступ: /subscribe'))[:3900] + footer)
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Формат: /admin_payments TELEGRAM_ID')
 
@@ -147,7 +169,10 @@ def register_payments(router, billing, workers, settings):
                     f'Тарифы сейчас\n{billing.plans_text()}\n\n'
                     '/set_price 40 3 — 3 дня за 40 Stars: добавить тариф или изменить цену.\n/del_price 3 — убрать тариф на 3 дня.\n'
                     'Цена: 1–10000 Stars; срок: 1–365 дней; до 8 тарифов. Изменения относятся к новым счетам, оплаченные сроки не меняются.\n\n'
-                    'Платежи пользователя\n/admin_payments TELEGRAM_ID — последние 30 платежей.\n\nПодробности: /help → «Администратор»')
+                    'Платежи и возвраты\n/admin_payments TELEGRAM_ID — последние 30 платежей с ID операций.\n'
+                    '/refund ID_ОПЕРАЦИИ — показать платёж и что станет с подпиской.\n'
+                    '/refund ID_ОПЕРАЦИИ confirm — вернуть Stars. Срок этого платежа перестанет учитываться; отменить возврат нельзя.\n\n'
+                    'Подробности: /help → «Администратор»')
                 return
             if command.command == 'set_price':
                 if len(parts) != 2:
@@ -162,6 +187,51 @@ def register_payments(router, billing, workers, settings):
             await message.answer(f'{done}\n\nТарифы сейчас\n{billing.plans_text()}\n\nУже выставленные счета действуют по прежней цене 30 минут.')
         except (BotError,ValueError) as exc:
             await message.answer(str(exc) if isinstance(exc,BotError) else 'Формат: /set_price ЗВЁЗДЫ ДНИ или /del_price ДНИ. Подсказка: /admin')
+
+    @router.message(Command('refund'))
+    async def refund(message: Message, command: CommandObject):
+        """Вернуть Stars по ID операции: сначала показать платёж, затем вернуть после confirm."""
+        try:
+            billing.require_admin(message.from_user.id)
+            parts = (command.args or '').split()
+            if not 1 <= len(parts) <= 2 or (len(parts) == 2 and parts[1].lower() != 'confirm'):
+                raise ValueError()
+            row = billing.payment_by_charge(parts[0])
+        except BotError as exc:
+            await message.answer(str(exc))
+            return
+        except ValueError:
+            await message.answer('Формат: /refund ID_ОПЕРАЦИИ — показать платёж; /refund ID_ОПЕРАЦИИ confirm — вернуть Stars.\n'
+                                 'ID операции: /admin_payments TELEGRAM_ID или чек Telegram у покупателя.')
+            return
+        user_id, charge = row['user_id'], row['charge_id']
+        details = (f"💸 Возврат Stars\n\nID операции: {charge}\nПлатёж №{row['id']} · пользователь {user_id}\n"
+                   f"{row['stars']} Stars · {days_text(row['days'])} · {_moment(row['paid_at'])}\n"
+                   f"Статус: {STATUSES.get(row['status'], 'требует сверки')}")
+        if row['status'] == 'refunded':
+            await message.answer(details + '\n\nЭтот платёж уже возвращён.')
+            return
+        if len(parts) == 1:
+            await message.answer(details + f"\n\nДоступ пользователя сейчас: {_access(billing.until(user_id))}\n"
+                                 f"После возврата: {_access(billing.until(user_id, exclude_id=row['id']))}\n\n"
+                                 f"Stars вернутся покупателю, срок этого платежа перестанет учитываться. Отменить возврат нельзя.\n"
+                                 f"Подтвердить: /refund {charge} confirm")
+            return
+        try:
+            await billing.refund(message.bot, message.from_user.id, row['id'])
+        except BotError as exc:
+            await message.answer(f'{exc}\nПовторить: /refund {charge} confirm')
+            return
+        except Exception as exc:
+            # Ответ мог потеряться: платёж остаётся «возврат ожидает подтверждения», повтор безопасен.
+            logger.warning('Возврат Stars %s не подтверждён: %s', row['id'], type(exc).__name__)
+            await message.answer(f'Telegram не ответил. Статус: возврат ожидает подтверждения.\nПовторить: /refund {charge} confirm')
+            return
+        if not billing.active(user_id):
+            await workers.stop_all(user_id)
+        await message.answer(f"✅ Возврат выполнен: {row['stars']} Stars пользователю {user_id}.\n"
+                             f"Доступ пользователя: {_access(billing.until(user_id))}.\n"
+                             'Telegram пришлёт пользователю уведомление о возврате.')
 
     @router.message(Command('admin_stats'))
     async def admin_stats(message: Message):

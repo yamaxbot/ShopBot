@@ -76,12 +76,28 @@ def test_all_commands_are_documented_and_texts_fit_telegram():
     for text in (start_text(), commands_text(), help_text(), *(help_text(key) for key in TOPICS)):
         assert len(text) <= 4096
     for command in ('start', 'commands', 'help', 'settings', 'add', 'check', 'run',
-                    'stop', 'stats', 'status', 'cancel', 'connect', 'items', 'limit',
-                    'bump', 'fp_connect', 'fp_items', 'fp_check', 'fp_errors',
+                    'stop', 'stats', 'status', 'cancel', 'pl_connect', 'pl_items', 'pl_check',
+                    'pl_limit', 'pl_bump', 'fp_connect', 'fp_items', 'fp_check', 'fp_errors',
                     'groups', 'group', 'group_new', 'group_rename', 'fees',
-                    'daily', 'allstats', 'stop_all', 'bump_status'):
+                    'daily', 'allstats', 'stop_all', 'pl_bump_status'):
         assert '/' + command in commands_text()
     assert help_text() != commands_text()
+
+
+def test_menu_commands_are_valid_and_documented():
+    from playerok_bot.telegram.bot import BOT_COMMANDS
+    names = [name for name, _ in BOT_COMMANDS]
+    assert len(names) == len(set(names)) <= 100
+    for name, description in BOT_COMMANDS:
+        assert name.isascii() and name.replace('_', '').isalnum() and name == name.lower() and len(name) <= 32
+        assert 3 <= len(description) <= 256
+        assert '/' + name in commands_text()
+    # Команды площадок разделены префиксами, старые имена Playerok в меню не показываются.
+    assert {'pl_connect', 'pl_items', 'pl_check', 'pl_limit', 'pl_bump', 'pl_bump_status'} <= set(names)
+    assert not {'connect', 'items', 'limit', 'bump', 'bump_status'} & set(names)
+    for text in (start_text(), commands_text(), help_text(), *(help_text(key) for key in TOPICS)):
+        for old in ('/connect', '/items', '/limit', '/bump ', '/bump_status'):
+            assert old not in text
 
 
 def test_public_help_does_not_expose_admin_commands():

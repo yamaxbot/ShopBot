@@ -33,7 +33,7 @@ class BumpService:
 
     def _check_due(self, now: datetime | None = None) -> str:
         if not self.settings.auto_bump_enabled:
-            return 'Поднятия выключены: /bump on'
+            return 'Поднятия выключены: /pl_bump on'
         clock = (lambda: now) if now is not None else (lambda: datetime.now(timezone.utc))
         current = clock()
         if not bump_time_allowed(current):

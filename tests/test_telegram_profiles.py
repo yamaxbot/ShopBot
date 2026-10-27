@@ -175,7 +175,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert len(session.responses[-1][1]) < 1000
             await send(101, '/commands')
             assert '/fp_connect' in session.responses[-1][1]
-            assert '/bump on' in session.responses[-1][1]
+            assert '/pl_bump on' in session.responses[-1][1]
             await send(101, 'Команды')
             assert 'Команды бота' in session.responses[-1][1]
             await send(101, "/add first@example.test:secret-one")
@@ -183,7 +183,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             await send(202, "Логин second@example.test Пароль secret-two")
             await send(303, "group@example.test:secret-three", group=True)
             # Два пользователя одновременно проходят разные шаги настройки.
-            await send(101, "/connect")
+            await send(101, "/pl_connect")
             await send(202, "/connect")
             await send(101, '/help')
             assert 'Как работает бот' in session.responses[-1][1]
@@ -191,7 +191,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             await send(101, "testtoken-a")
             await send(202, "testtoken-b")
             assert 'Подключён ваш профиль' in session.responses[-1][1]
-            await send(101, "/items")
+            await send(101, "/pl_items")
             await send(101, "https://playerok.com/products/own-item-a")
             await send(202, "/items")
             await send(202, "https://playerok.com/products/own-item-b")
@@ -232,7 +232,7 @@ def test_router_imports_are_bound_to_sender_and_reject_groups(tmp_path):
             assert all("testtoken-" not in text for _, text in session.responses)
             assert all('private-key-' not in text for _, text in session.responses)
             assert session.responses[-1][0] == 101
-            await send(101, '/items clear')
+            await send(101, '/pl_items clear')
             assert profiles.get(101).config['items'] == []
             assert profiles.get(101).config['funpay_items'] == ['111', '112']
             assert profiles.get(202).config['items'] == ['https://playerok.com/products/own-item-b']

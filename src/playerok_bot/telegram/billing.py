@@ -88,10 +88,12 @@ class Billing:
         if user_id not in self.admin_ids:
             raise ConfigurationError('Команда недоступна.')
 
-    def until(self, user_id):
+    def until(self, user_id, exclude_id=None):
+        """Конец оплаченного доступа; exclude_id — посчитать так, будто этот платёж возвращён."""
         end = 0
         for row in self.db.execute("SELECT * FROM star_payments WHERE user_id=? AND status='paid' ORDER BY paid_at,id", (user_id,)):
-            end = max(end, row['paid_at']) + row['days'] * 86400
+            if row['id'] != exclude_id:
+                end = max(end, row['paid_at']) + row['days'] * 86400
         return end
 
     def active(self, user_id):
@@ -148,6 +150,14 @@ class Billing:
             raise ConfigurationError('Платёж не найден.')
         return row
 
+    def payment_by_charge(self, charge_id):
+        """Платёж по ID операции Telegram (telegram_payment_charge_id из чека)."""
+        row = self.db.execute('SELECT * FROM star_payments WHERE charge_id=?', (charge_id,)).fetchone()
+        if not row:
+            raise ConfigurationError('Платёж с таким ID операции не найден. ID есть в /admin_payments TELEGRAM_ID '
+                                     'и в чеке Telegram у покупателя.')
+        return row
+
     async def refund(self, bot, admin_id, payment_id):
         self.require_admin(admin_id)
         row = self.payment(payment_id)
@@ -180,7 +190,7 @@ class Billing:
 
 class SubscriptionAccess(BaseMiddleware):
     FREE = {'start','help','commands','subscribe','subscription','payments','terms','support','paysupport',
-            'stop','stop_all','stats','status','daily','allstats','settings','groups','group','cancel','bump_status',
+            'stop','stop_all','stats','status','daily','allstats','settings','groups','group','cancel','bump_status','pl_bump_status',
             'export','export_confirm','export_cancel','export_file','admin','set_price','del_price','refund','admin_payments','admin_stats','fp_errors'}
 
     def __init__(self, billing):

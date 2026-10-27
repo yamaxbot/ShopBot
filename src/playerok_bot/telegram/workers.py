@@ -127,16 +127,21 @@ class Workers:
     async def check(self, user_id: int):
         profile = self.profiles.get(user_id)
         if not profile.config['items'] and not profile.config['funpay_items']:
-            raise ConfigurationError("Сначала подключите Playerok через /connect и укажите лоты через /items")
+            raise ConfigurationError("Сначала настройте площадку: Playerok — /pl_connect и /pl_items, FunPay — /fp_connect и /fp_items")
         result = None
         if profile.config['funpay_items']:
             result = await self.check_funpay(user_id)
         if profile.config['items']:
-            if not profile.playerok_id:
-                raise ConfigurationError('Подключите Playerok через /connect')
-            result = await self.probe(profile)
-            if result["id"] != profile.playerok_id:
-                raise ConfigurationError("Авторизация относится к другому профилю Playerok")
+            result = await self.check_playerok(user_id)
+        return result
+
+    async def check_playerok(self, user_id: int):
+        profile = self.profiles.get(user_id)
+        if not profile.playerok_id or not profile.config['items']:
+            raise ConfigurationError('Подключите Playerok через /pl_connect и укажите лоты через /pl_items')
+        result = await self.probe(profile)
+        if result["id"] != profile.playerok_id:
+            raise ConfigurationError("Авторизация относится к другому профилю Playerok")
         return result
 
     async def connect_funpay(self, user_id: int, key: str, agent: str):
@@ -276,7 +281,7 @@ class Workers:
                         storage.close()
                     if bump_errors - self.bump_alerts.get(key, set()):
                         await bot.send_message(profile.user_id, f'Группа «{profile.group_name}»: поднятие Playerok не выполнено. '
-                                               'Причина и таймер — /bump_status. Проверьте выбранную группу через /groups.',
+                                               'Причина и таймер — /pl_bump_status. Проверьте выбранную группу через /groups.',
                                                reply_markup=ReplyKeyboardRemove())
                     self.bump_alerts[key] = bump_errors
                     uncertain = {op['id'] for op in pending if op['status'] == 'uncertain'}

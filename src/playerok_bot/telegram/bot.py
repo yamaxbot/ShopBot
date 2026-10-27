@@ -57,7 +57,7 @@ def account_help():
         "Несколько аккаунтов — каждый с новой строки или отдельным блоком. Больше сотни удобнее отправить файлом. "
         "Добавляйте только непроданные аккаунты, включая данные текущих лотов.\n\n"
         "Можно и одной командой: /add mail@example.com:password\n"
-        "Ссылки на объявления сюда не отправляйте: для них /items (Playerok) и /fp_items (FunPay).\n"
+        "Ссылки на объявления сюда не отправляйте: для них /pl_items (Playerok) и /fp_items (FunPay).\n"
         "Отмена: /cancel"
     )
 
@@ -107,7 +107,7 @@ def link_hint(text: str, hidden: list[str] | tuple[str, ...] = ()) -> str | None
         lines.append("FunPay: выполните /fp_items и отправьте все ссылки одним сообщением, каждую с новой строки. "
                      "Новый список заменяет прежний.")
     if "Playerok" in platforms:
-        lines.append("Playerok: выполните /items и отправьте все ссылки одним сообщением, каждую с новой строки. "
+        lines.append("Playerok: выполните /pl_items и отправьте все ссылки одним сообщением, каждую с новой строки. "
                      "Новый список заменяет прежний.")
     lines.append("Аккаунты отправляйте простым текстом без ссылок: /add, затем аккаунты.")
     return "\n\n".join(lines)
@@ -274,7 +274,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
                 profiles.select_group(message.from_user.id, int(arg))
                 group = profiles.get(message.from_user.id)
             await reply(message, f'Выбрана группа №{group.group_id}: {group.group_name}.\n'
-                        'Объявления (/items, /fp_items), отправленные аккаунты и команды /run, /stop относятся к ней. '
+                        'Объявления (/pl_items, /fp_items), отправленные аккаунты и команды /run, /stop относятся к ней. '
                         'Другие запущенные группы продолжают работать.')
         except BotError as exc:
             await reply(message, str(exc))
@@ -347,7 +347,8 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         if query.message.text != text or query.message.reply_markup != keyboard:
             await query.message.edit_text(text, reply_markup=keyboard)
 
-    @router.message(Command('bump_status'))
+    # Команды Playerok начинаются с pl_, как команды FunPay с fp_. Старые имена работают как скрытые синонимы.
+    @router.message(Command('pl_bump_status', 'bump_status'))
     async def bump_status(message: Message):
         profile = profiles.get(message.from_user.id)
         storage = profiles.storage(profile.user_id)
@@ -362,8 +363,9 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             storage.close()
         await reply(message, f'🟣 Поднятия Playerok\nГруппа «{profile.group_name}»\n\nПоднятия: {"включены" if profile.config["bump"] else "выключены"}\n'
                     f'Обслуживание: {"работает" if workers.running(profile.user_id) else "остановлено"}\n\n'
-                    + ('\n\n'.join(lines) or 'Проверок поднятия ещё не было. Выполните /check и /run.')
-                    + '\n\nИнтервал: 2 часа без покупок отдельно для каждого лота.\nВремя: 12:00–00:00 МСК. Поднятия платные.\nПредел цены: /limit · Подробнее: /help → «Playerok»')
+                    + ('\n\n'.join(lines) or 'Проверок поднятия ещё не было. Выполните /pl_check и /run.')
+                    + '\n\nИнтервал: 2 часа без покупок отдельно для каждого лота.\nВремя: 12:00–00:00 МСК. Поднятия платные.\n'
+                    'Предел цены: /pl_limit · Вкл/выкл: /pl_bump on, /pl_bump off · Подробнее: /help → «Playerok»')
 
     @router.message(Command("cancel"))
     async def cancel(message: Message, state: FSMContext):
@@ -385,9 +387,11 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             f"Лотов: {len(profile.config['items'])}\n"
             f"Лимит операции: {profile.config['price_limit']} ₽\n"
             f"Плановые поднятия: {'включены' if profile.config['bump'] else 'выключены'}\n"
+            "Команды: /pl_connect · /pl_items · /pl_check · /pl_limit · /pl_bump · /pl_bump_status\n"
             "\n🔵 FunPay\n"
             f"FunPay подключён: {'да' if profile.funpay_id else 'нет'}\n"
             f"FunPay-лотов: {len(profile.config['funpay_items'])}\n"
+            "Команды: /fp_connect · /fp_items · /fp_check · /fp_errors\n"
             "FunPay: до 5 аккаунтов в каждом лоте. Playerok: 5 в резерве сверх активных лотов.\n\n"
             "Запуск: /run · Остановка: /stop\nСменить группу: /groups\n"
             "Настройка площадок: кнопки Playerok и FunPay в /help\nПодписка: /subscription"
@@ -433,7 +437,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
                 f"{'Общая пауза FunPay' if row['key'].endswith(':pause') else 'Лот ' + row['key'].split(':', 1)[1]} · {display_time(row['updated_at'])}\n{row['value']}" for row in errors[:8])
         await reply(message, text[:3850] + '\n\nHTTP 429 — дождитесь паузы.\nЧто делать при ошибках: /help → «Если что-то не работает»')
 
-    @router.message(Command("connect"))
+    @router.message(Command("pl_connect", "connect"))
     async def connect(message: Message, state: FSMContext):
         await state.clear()
         await state.set_state(Setup.token)
@@ -444,13 +448,13 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
             "В браузере должен быть открыт ваш профиль.\n\nПодключение общее для всех ваших групп.\nОтмена: /cancel"
         )
 
-    @router.message(Command("items"))
+    @router.message(Command("pl_items", "items"))
     @router.message(F.text == "Лоты")
     async def items(message: Message, state: FSMContext):
         parts = (message.text or '').split(maxsplit=1)
         if len(parts) > 1:
             if parts[1].strip().lower() != 'clear':
-                await reply(message, 'Используйте /items для добавления Playerok-лотов или /items clear для удаления их из настроек.')
+                await reply(message, 'Используйте /pl_items для добавления Playerok-лотов или /pl_items clear для удаления их из настроек.')
                 return
             await state.clear()
             await workers.stop(message.from_user.id)
@@ -461,18 +465,18 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         await state.set_state(Setup.items)
         await reply(message, "Playerok: отправьте ссылки на 1–3 своих премиум-лота, каждую с новой строки. В лотах должны быть разные аккаунты. «Оставлять в продаже» выключите. Для FunPay используйте /fp_items.")
 
-    @router.message(Command("limit"))
+    @router.message(Command("pl_limit", "limit"))
     async def limit(message: Message, state: FSMContext):
         await state.clear()
         await state.set_state(Setup.limit)
-        await reply(message, "Отправьте максимальную цену одной премиум-публикации или поднятия в рублях (0–10000).")
+        await reply(message, "🟣 Лимит Playerok\n\nОтправьте максимальную цену одной премиум-публикации или поднятия в рублях (0–10000).\nОтмена: /cancel")
 
-    @router.message(Command("bump"))
+    @router.message(Command("pl_bump", "bump"))
     async def bump(message: Message, state: FSMContext, command: CommandObject):
         await state.clear()
         arg = (command.args or "").strip().lower()
         if arg not in {"on", "off"}:
-            await reply(message, "Используйте /bump on или /bump off.")
+            await reply(message, "Используйте /pl_bump on или /pl_bump off. Таймеры поднятий: /pl_bump_status")
             return
         await workers.stop(message.from_user.id)
         profiles.update(message.from_user.id, bump=arg == "on")
@@ -481,10 +485,22 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
     @router.message(Command("check"))
     async def check(message: Message, state: FSMContext):
         await state.clear()
-        await reply(message, "Проверяю ваш профиль и лоты…")
+        await reply(message, "Проверяю все настроенные площадки и лоты…")
         try:
             result = await workers.check(message.from_user.id)
-            await reply(message, f"Проверка пройдена: @{result['username']}. Можно выполнить /run.")
+            await reply(message, f"Проверка пройдена: {result['username']}. Можно выполнить /run.\n"
+                                 "Отдельно: Playerok — /pl_check, FunPay — /fp_check.")
+        except BotError as exc:
+            await reply(message, str(exc))
+
+    @router.message(Command("pl_check"))
+    async def pl_check(message: Message, state: FSMContext):
+        await state.clear()
+        await reply(message, "Проверяю Playerok и лоты…")
+        try:
+            result = await workers.check_playerok(message.from_user.id)
+            await reply(message, f"✅ Playerok проверен: @{result['username']}.\n\nПроверка не публикует лоты и не запускает продажи.\n"
+                                 "Следующий шаг: /run\nПоднятия: /pl_bump_status")
         except BotError as exc:
             await reply(message, str(exc))
 
@@ -495,7 +511,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         await reply(message, "Проверяю настройку перед запуском…")
         try:
             await workers.start(message.from_user.id)
-            await reply(message, "✅ Автовыдача выбранной группы запущена.\n\nБот проверяет лоты и пополняет их из свободного запаса. Первые изменения могут появиться не сразу, особенно во время паузы FunPay.\n\nСклад и продажи: /stats\nОшибки FunPay: /fp_errors\nПоднятия Playerok: /bump_status\nОстановка: /stop")
+            await reply(message, "✅ Автовыдача выбранной группы запущена.\n\nБот проверяет лоты и пополняет их из свободного запаса. Первые изменения могут появиться не сразу, особенно во время паузы FunPay.\n\nСклад и продажи: /stats\nОшибки FunPay: /fp_errors\nПоднятия Playerok: /pl_bump_status\nОстановка: /stop")
         except BotError as exc:
             await reply(message, str(exc))
 
@@ -560,7 +576,7 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         if is_link(message.text) or hidden_links(message):
             await reply(message, "🔗 Это ссылка, а не token\n\nОтправьте значение cookie token своего профиля Playerok: "
                                  "браузер → F12 → Application → Cookies → playerok.com → token.\n"
-                                 "Объявления Playerok добавляются отдельно: /items.\nОтмена: /cancel")
+                                 "Объявления Playerok добавляются отдельно: /pl_items.\nОтмена: /cancel")
             return
         raw = message.text.strip().strip('"\'')
         if raw.startswith("PLAYEROK_TOKEN="):
@@ -575,9 +591,9 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
         try:
             username = await workers.connect(message.from_user.id, cookies, DEFAULT_BROWSER_USER_AGENT)
         except BotError as exc:
-            await reply(message, f"{exc}\nПовторить подключение: /connect.")
+            await reply(message, f"{exc}\nПовторить подключение: /pl_connect.")
             return
-        await reply(message, f"Подключён ваш профиль @{username}. Укажите лоты через /items.")
+        await reply(message, f"Подключён ваш профиль @{username}. Укажите лоты через /pl_items.")
 
     @router.message(Setup.funpay_key, F.text)
     async def receive_fp_key(message: Message, state: FSMContext):
@@ -687,6 +703,32 @@ def create_router(profiles: Profiles, workers: Workers, settings: TelegramSettin
     return router
 
 
+# Меню команд Telegram для всех пользователей. Административные команды сюда не входят.
+BOT_COMMANDS = (
+    ("start", "Как начать работу"), ("commands", "Все команды с пояснениями"),
+    ("settings", "Мои настройки"), ("add", "Добавить аккаунты"),
+    ("stats", "Моя статистика"), ("check", "Проверить все площадки"),
+    ("run", "Запустить продажи"), ("stop", "Остановить продажи"),
+    ("help", "Как работает бот и что означают статусы"),
+    ("subscription", "Моя подписка и тарифы"), ("subscribe", "Купить или продлить подписку"),
+    ("payments", "Мои платежи"), ("terms", "Условия подписки"),
+    ("paysupport", "Поддержка оплаты"), ("support", "Поддержка"),
+    ("export", "Забрать непроданный склад группы"), ("export_confirm", "Подтвердить выгрузку"),
+    ("export_cancel", "Отменить подготовку выгрузки"), ("export_file", "Последний файл выгрузки"),
+    ("groups", "Группы товаров"), ("group", "Выбрать группу"),
+    ("group_new", "Создать группу"), ("group_rename", "Переименовать группу"),
+    ("daily", "Статистика по дням"), ("allstats", "Все группы за всё время"),
+    ("fees", "Комиссии для расчёта"),
+    ("stop_all", "Остановить все группы"), ("status", "Статистика выбранной группы"),
+    ("cancel", "Отменить ввод"),
+    ("pl_connect", "Playerok: подключить профиль"), ("pl_items", "Playerok: мои лоты"),
+    ("pl_check", "Playerok: проверить"), ("pl_limit", "Playerok: лимит стоимости"),
+    ("pl_bump", "Playerok: поднятия вкл/выкл"), ("pl_bump_status", "Playerok: таймеры поднятий"),
+    ("fp_connect", "FunPay: подключить профиль"), ("fp_items", "FunPay: мои лоты"),
+    ("fp_check", "FunPay: проверить"), ("fp_errors", "FunPay: ошибки и сверка"),
+)
+
+
 async def run(settings: TelegramSettings):
     profiles = Profiles(settings.data_dir)
     from .billing import Billing
@@ -698,28 +740,8 @@ async def run(settings: TelegramSettings):
     async with Bot(token=settings.token, session=session) as bot:
         monitor = None
         try:
-            await bot.set_my_commands([BotCommand(command=name, description=description) for name, description in (
-                ("start", "Как начать работу"), ("commands", "Все команды с пояснениями"),
-                ("settings", "Мои настройки"), ("connect", "Подключить Playerok"),
-                ("items", "Мои объявления"), ("add", "Добавить аккаунты"),
-                ("stats", "Моя статистика"), ("check", "Проверить лоты"),
-                ("run", "Запустить продажи"), ("stop", "Остановить продажи"),
-                ("help", "Как работает бот и что означают статусы"),
-                ("subscription", "Моя подписка и тарифы"), ("subscribe", "Купить или продлить подписку"),
-                ("payments", "Мои платежи"), ("terms", "Условия подписки"),
-                ("paysupport", "Поддержка оплаты"), ("support", "Поддержка"),
-                ("export", "Забрать непроданный склад группы"), ("export_confirm", "Подтвердить выгрузку"),
-                ("export_cancel", "Отменить подготовку выгрузки"), ("export_file", "Последний файл выгрузки"),
-                ("groups", "Группы товаров"), ("group", "Выбрать группу"),
-                ("group_new", "Создать группу"), ("group_rename", "Переименовать группу"),
-                ("daily", "Статистика по дням"), ("allstats", "Все группы за всё время"),
-                ("fees", "Комиссии для расчёта"), ("bump_status", "Таймеры поднятия Playerok"),
-                ("stop_all", "Остановить все группы"), ("status", "Статистика выбранной группы"),
-                ("cancel", "Отменить ввод"), ("limit", "Лимит стоимости Playerok"),
-                ("bump", "Включить или выключить поднятия"),
-                ("fp_connect", "Подключить FunPay"), ("fp_items", "Мои лоты FunPay"),
-                ("fp_check", "Проверить FunPay"), ("fp_errors", "Сверка изменений FunPay"),
-            )])
+            await bot.set_my_commands([BotCommand(command=name, description=description)
+                                       for name, description in BOT_COMMANDS])
             await workers.restore()
             monitor = asyncio.create_task(workers.monitor(bot))
             logger.info("Telegram-бот запущен; лимит активных профилей: %s", settings.max_workers)

@@ -94,7 +94,7 @@ def test_link_hint_names_the_right_command():
     assert "/fp_items" in funpay and "склад не изменён" in funpay
     assert "/items" not in funpay.replace("/fp_items", "")
     playerok = link_hint("https://playerok.com/products/slug")
-    assert "/items" in playerok and "/fp_items" not in playerok
+    assert "/pl_items" in playerok and "/fp_items" not in playerok
     assert link_hint("mail@example.test:secret") is None
     # Ссылка спрятана под текстом «мой лот».
     assert "/fp_items" in link_hint("мой лот", ["https://funpay.com/lots/offer?id=1"])
@@ -213,7 +213,7 @@ def test_plain_text_never_reaches_stock(tmp_path):
     async def scenario(bot):
         # Ссылка со скриншота без /fp_items: подсказка, склад пуст, сообщение не удалено.
         assert "/fp_items" in await bot.send(INCIDENT_LINK)
-        assert "/items" in await bot.send("https://playerok.com/products/own-item")
+        assert "/pl_items" in await bot.send("https://playerok.com/products/own-item")
         assert "/fp_items" in await bot.send("(https://funpay.com)")
         # Случайные фразы и даже аккаунт без /add на склад не попадают.
         for text in ("Спасибо большое", "Вопрос: как добавить лот", "mail@example.test:secret",

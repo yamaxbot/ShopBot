@@ -56,7 +56,7 @@ def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
             assert '/refund' not in session.calls[-1].text
             await send(1, '/commands')
             assert '/admin_payments' in session.calls[-1].text
-            assert '/refund' not in session.calls[-1].text
+            assert '/refund' in session.calls[-1].text
             await send(2, '/paysupport')
             assert 'tg://user' not in session.calls[-1].text
             assert 'администратор' not in session.calls[-1].text.lower()
@@ -83,9 +83,11 @@ def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
             db=profiles.storage(2)
             assert db.counts()['queued']==1
             db.close()
-            await send(2,'/refund 1 confirm')
-            assert billing.active(2)
+            # Обычный пользователь не может вернуть платёж; номер платежа вместо ID операции не подходит.
+            await send(2,'/refund real-charge confirm')
+            assert session.calls[-1].text == 'Команда недоступна.'
             await send(1,'/refund 1 confirm')
+            assert 'не найден' in session.calls[-1].text
             assert billing.active(2)
             assert not any(isinstance(call, RefundStarPayment) for call in session.calls)
             await send(2, refunded_payment={key: value for key, value in receipt.items() if key != 'provider_payment_charge_id'})
