@@ -7,6 +7,7 @@ from datetime import datetime
 
 from ..finance import MSK
 from ..inventory import Inventory
+from .billing import days_text
 
 logger = logging.getLogger(__name__)
 DAY = 86400
@@ -31,7 +32,7 @@ def collect(profiles, billing, running=frozenset(), now: float | None = None) ->
     known = [row['created_at'] for row in users if row['created_at'] is not None]
     groups = db.execute('SELECT user_id, group_id FROM product_groups').fetchall()
 
-    payments = db.execute('SELECT id, user_id, stars, paid_at, status FROM star_payments ORDER BY paid_at, id').fetchall()
+    payments = db.execute('SELECT id, user_id, stars, days, paid_at, status FROM star_payments ORDER BY paid_at, id').fetchall()
     # Возвращённые платежи не считаются покупками: первые покупки + продления = оплаты.
     paid = [row for row in payments if row['status'] == 'paid']
     refunds = [row for row in payments if row['status'] != 'paid']
@@ -76,7 +77,10 @@ def collect(profiles, billing, running=frozenset(), now: float | None = None) ->
         'invoices': count(invoices),
         'refunds': len(refunds),
         'refunded_stars': sum(row['stars'] for row in refunds),
-        'plan': billing.plan(),
+        'plans': billing.plans(),
+        # Оплаты по сроку подписки за всё время, включая удалённые тарифы: {дней: [оплат, Stars]}.
+        'by_days': {days: [sum(row['days'] == days for row in paid), sum(row['stars'] for row in paid if row['days'] == days)]
+                    for days in sorted({row['days'] for row in paid})},
         'sold': 0,
         'in_stock': 0,
         'unread_groups': 0,
@@ -136,7 +140,10 @@ def render(stats: dict) -> str:
         _row("Продления", stats['renewals']),
         _row("Счетов выставлено", stats['invoices']),
         f"Возвраты за всё время: {stats['refunds']} ({stats['refunded_stars']} Stars)",
-        f"Тариф сейчас: {stats['plan']['stars']} Stars за {stats['plan']['days']} дней",
+        "По срокам за всё время: " + (" · ".join(f"{days_text(days)} — {count} ({stars} ⭐)"
+                                                for days, (count, stars) in stats['by_days'].items()) or "оплат нет"),
+        "Тарифы сейчас: " + (" · ".join(f"{days_text(plan['days'])} — {plan['stars']} ⭐"
+                                         for plan in stats['plans']) or "не настроены"),
         "",
         "📦 Продажи продавцов",
         f"Продано/выдано аккаунтов за всё время: {stats['sold']}",

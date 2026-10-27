@@ -7,7 +7,7 @@ from .. import withdrawal
 
 class ExportAccess(BaseMiddleware):
     ALLOWED = {'start','help','commands','export','export_confirm','export_cancel','export_file',
-        'subscription','subscribe','payments','terms','paysupport','support','admin','admin_payments','admin_stats','refund','set_price',
+        'subscription','subscribe','payments','terms','paysupport','support','admin','admin_payments','admin_stats','refund','set_price','del_price',
         'stats','status','daily','allstats','groups','group','stop','stop_all','settings','bump_status','fp_errors','cancel'}
 
     def __init__(self, profiles):

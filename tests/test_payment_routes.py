@@ -47,10 +47,10 @@ def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
         try:
             await send(2,'secret:password')
             assert 'подписка' in session.calls[-1].text
-            await send(2,'/set_price 1')
-            assert billing.plan()['stars'] == 100
+            await send(2,'/set_price 1 3')
+            assert {'days':3,'stars':20} in billing.plans()
             await send(1,'/set_price 150 10')
-            assert billing.plan() == {'stars':150,'days':10}
+            assert {'days':10,'stars':150} in billing.plans()
             await send(2, '/commands')
             assert '/admin' not in session.calls[-1].text
             assert '/refund' not in session.calls[-1].text
@@ -64,7 +64,7 @@ def test_real_router_paywall_checkout_receipt_and_external_refund(tmp_path):
             assert session.calls[-2].chat_id == 1
             assert 'Платёж не появился' in session.calls[-2].text
             assert 'передано' in session.calls[-1].text
-            await send(2,'/subscribe agree')
+            await send(2,'/subscribe agree 10')
             invoice=session.calls[-1]
             assert isinstance(invoice,SendInvoice) and invoice.currency=='XTR'
             assert invoice.prices[0].amount == 150

@@ -7,14 +7,27 @@ from ..finance import MSK
 from aiogram import BaseMiddleware
 from ..errors import ConfigurationError
 
+# Тарифы первого запуска: (дней, Stars). Дальше их меняют администраторы.
+DEFAULT_PLANS = ((3, 20), (7, 35), (15, 70))
+MAX_PLANS = 8
+
+
+def days_text(days: int) -> str:
+    """«1 день», «3 дня», «15 дней», «21 день»."""
+    if 11 <= days % 100 <= 14 or not 1 <= days % 10 <= 4:
+        word = 'дней'
+    else:
+        word = 'день' if days % 10 == 1 else 'дня'
+    return f'{days} {word}'
+
 
 class Billing:
     def __init__(self, profiles, admin_ids=frozenset()):
         self.db = profiles.connection
         self.admin_ids = admin_ids
+        fresh = not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='billing_plans'").fetchone()
         self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS billing_plan (id INTEGER PRIMARY KEY CHECK(id=1), stars INTEGER NOT NULL, days INTEGER NOT NULL);
-            INSERT OR IGNORE INTO billing_plan VALUES (1,100,30);
+            CREATE TABLE IF NOT EXISTS billing_plans (days INTEGER PRIMARY KEY, stars INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS star_invoices (
                 payload TEXT PRIMARY KEY, user_id INTEGER NOT NULL, stars INTEGER NOT NULL,
                 days INTEGER NOT NULL, created_at INTEGER NOT NULL, approved INTEGER NOT NULL DEFAULT 0);
@@ -25,17 +38,47 @@ class Billing:
             CREATE TABLE IF NOT EXISTS billing_audit (
                 id INTEGER PRIMARY KEY, admin_id INTEGER, action TEXT, detail TEXT, created_at INTEGER);
         """)
+        # Таблица прежнего единственного тарифа (billing_plan) больше не используется.
+        # Тарифы по умолчанию добавляются один раз: удалённые администратором не возвращаются.
+        if fresh:
+            with self.db:
+                self.db.executemany('INSERT OR IGNORE INTO billing_plans VALUES (?,?)', DEFAULT_PLANS)
 
-    def plan(self):
-        return dict(self.db.execute('SELECT stars,days FROM billing_plan WHERE id=1').fetchone())
+    def plans(self):
+        """Тарифы по возрастанию срока: [{'days': 3, 'stars': 20}, …]."""
+        return [dict(row) for row in self.db.execute('SELECT days,stars FROM billing_plans ORDER BY days')]
+
+    def plans_text(self):
+        return '\n'.join(f"• {days_text(plan['days'])} — {plan['stars']} ⭐" for plan in self.plans()) or 'Тарифы пока не настроены.'
+
+    def plan_for(self, days):
+        row = self.db.execute('SELECT days,stars FROM billing_plans WHERE days=?', (days,)).fetchone()
+        if not row:
+            raise ConfigurationError('Такого тарифа нет. Выберите срок кнопкой: /subscribe')
+        return dict(row)
 
     def set_plan(self, admin_id, stars, days):
+        """Добавить тариф или изменить цену тарифа с этим сроком."""
         self.require_admin(admin_id)
         if not 1 <= stars <= 10000 or not 1 <= days <= 365:
             raise ConfigurationError('Цена: 1–10000 Stars; срок: 1–365 дней.')
         with self.db:
-            self.db.execute('UPDATE billing_plan SET stars=?,days=? WHERE id=1', (stars,days))
+            exists = self.db.execute('SELECT 1 FROM billing_plans WHERE days=?', (days,)).fetchone()
+            if not exists and len(self.plans()) >= MAX_PLANS:
+                raise ConfigurationError(f'Можно не больше {MAX_PLANS} тарифов. Уберите лишний: /del_price ДНИ')
+            self.db.execute('INSERT INTO billing_plans VALUES (?,?) ON CONFLICT(days) DO UPDATE SET stars=excluded.stars',
+                            (days, stars))
             self.audit(admin_id, 'plan', f'{stars}/{days}')
+
+    def remove_plan(self, admin_id, days):
+        self.require_admin(admin_id)
+        with self.db:
+            if not self.db.execute('SELECT 1 FROM billing_plans WHERE days=?', (days,)).fetchone():
+                raise ConfigurationError(f'Тарифа на {days_text(days)} нет. Текущие тарифы: /admin')
+            if len(self.plans()) == 1:
+                raise ConfigurationError('Должен остаться хотя бы один тариф. Сначала добавьте другой: /set_price ЗВЁЗДЫ ДНИ')
+            self.db.execute('DELETE FROM billing_plans WHERE days=?', (days,))
+            self.audit(admin_id, 'plan_removed', days)
 
     def audit(self, admin_id, action, detail):
         self.db.execute('INSERT INTO billing_audit(admin_id,action,detail,created_at) VALUES (?,?,?,?)',
@@ -59,15 +102,15 @@ class Billing:
             raise ConfigurationError('Для работы нужна подписка: /subscribe. Статистика, остановка и выгрузка остаются доступны.')
 
     def summary(self, user_id):
-        plan = self.plan()
         end = self.until(user_id)
         state = 'Администратор: доступ без оплаты.' if user_id in self.admin_ids else (
             'Оплачено до ' + datetime.fromtimestamp(end, MSK).strftime('%d.%m.%Y %H:%M МСК') if end > time.time() else 'Подписка не активна.')
-        return (f"⭐ Подписка ShopBot\n\n{state}\nТариф: {plan['stars']} Stars за {plan['days']} дней.\n"
-                'Доступ действует на все ваши группы.\n\nПродление вручную: /subscribe\nАвтоматических списаний нет.\nПлатежи: /payments · Условия: /terms')
+        return (f"⭐ Подписка ShopBot\n\n{state}\nДоступ действует на все ваши группы.\n\n"
+                f"Тарифы:\n{self.plans_text()}\n\n"
+                'Купить или продлить: /subscribe\nАвтоматических списаний нет.\nПлатежи: /payments · Условия: /terms')
 
-    def invoice(self, user_id):
-        plan = self.plan()
+    def invoice(self, user_id, days):
+        plan = self.plan_for(days)
         payload = 'shop:' + secrets.token_urlsafe(24)
         with self.db:
             self.db.execute('INSERT INTO star_invoices VALUES (?,?,?,?,?,0)',
@@ -138,7 +181,7 @@ class Billing:
 class SubscriptionAccess(BaseMiddleware):
     FREE = {'start','help','commands','subscribe','subscription','payments','terms','support','paysupport',
             'stop','stop_all','stats','status','daily','allstats','settings','groups','group','cancel','bump_status',
-            'export','export_confirm','export_cancel','export_file','admin','set_price','refund','admin_payments','admin_stats','fp_errors'}
+            'export','export_confirm','export_cancel','export_file','admin','set_price','del_price','refund','admin_payments','admin_stats','fp_errors'}
 
     def __init__(self, billing):
         self.billing = billing

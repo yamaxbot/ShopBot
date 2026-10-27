@@ -19,7 +19,8 @@ def test_billing_validation_idempotency_renewal_refund_and_restart(tmp_path, mon
     profiles = Profiles(tmp_path)
     billing = Billing(profiles, frozenset({1}))
     assert billing.active(1) and not billing.active(2)
-    payload, plan = billing.invoice(2)
+    billing.set_plan(1,100,30)
+    payload, plan = billing.invoice(2, 30)
     assert plan == {'stars': 100, 'days': 30}
     for uid, currency, amount in ((3,'XTR',100),(2,'USD',100),(2,'XTR',1)):
         with pytest.raises(ConfigurationError):
@@ -36,7 +37,7 @@ def test_billing_validation_idempotency_renewal_refund_and_restart(tmp_path, mon
         billing.set_plan(2,1,365)
     billing.set_plan(1,250,10)
     assert billing.until(2) == clock[0]+30*86400
-    payload2,_ = billing.invoice(2)
+    payload2,_ = billing.invoice(2, 10)
     billing.validate(2,payload2,'XTR',250,True)
     second = billing.paid(2,payment(payload2,'second',250))
     assert billing.until(2) == clock[0]+40*86400
@@ -56,8 +57,10 @@ def test_billing_validation_idempotency_renewal_refund_and_restart(tmp_path, mon
 def test_invoice_price_is_frozen_and_pending_refund_can_retry(tmp_path, monkeypatch):
     profiles = Profiles(tmp_path)
     billing = Billing(profiles,frozenset({1}))
-    payload,_ = billing.invoice(2)
-    billing.set_plan(1,200,20)
+    billing.set_plan(1,100,30)
+    payload,_ = billing.invoice(2, 30)
+    # Цена тарифа изменилась после выставления счёта: счёт остаётся по прежней цене.
+    billing.set_plan(1,200,30)
     billing.validate(2,payload,'XTR',100,True)
     pid = billing.paid(2,payment(payload))
     bot = SimpleNamespace(refund_star_payment=AsyncMock(side_effect=TimeoutError))
