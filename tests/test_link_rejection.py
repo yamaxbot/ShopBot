@@ -226,6 +226,20 @@ def test_plain_text_never_reaches_stock(tmp_path):
     run(tmp_path, scenario)
 
 
+def test_bulk_add_counts_individual_accounts_and_rejects_ambiguous_tail(tmp_path):
+    async def scenario(bot):
+        text = ' '.join(f'user{i}@example.test:password{i}' for i in range(20))
+        result = await bot.send('/add ' + text)
+        assert 'Добавлено: 20' in result
+        assert bot.stock() == 20
+        result = await bot.send('/add ' + text)
+        assert 'Добавлено: 0' in result and 'Уже были в базе: 20' in result
+        result = await bot.send('/add another@example.test:password stray-text')
+        assert 'Склад пополнен' not in result
+        assert bot.stock() == 20
+    run(tmp_path, scenario)
+
+
 def test_add_mode_imports_one_message_and_rejects_links(tmp_path):
     async def scenario(bot):
         assert "следующим сообщением" in await bot.send("/add")

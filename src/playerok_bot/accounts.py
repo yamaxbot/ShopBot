@@ -7,6 +7,17 @@ from .errors import AccountsFormatError
 from .models import Credential
 
 
+def validate_credential(credential: Credential) -> None:
+    """Validate at storage and delivery boundaries, including legacy database rows."""
+    for value in (credential.login, credential.password):
+        if not value or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise AccountsFormatError('Ожидается один аккаунт: логин и пароль без пробелов и переносов. Список отправляйте отдельными строками.')
+    if len(credential.login) > 320 or len(credential.password) > 512 or re.search(
+        r'[^\s:;|@]+@[^\s:;|@]+[.:][^\s:;|@]*:', credential.password
+    ) or re.search(r'\\[nr]', credential.password):
+        raise AccountsFormatError('Данные похожи на склеенный список аккаунтов. Выдача заблокирована; проверьте исходный файл.')
+
+
 _LOGIN = r"(?:логин|login|почта|email|e-mail)"
 _PASSWORD = r"(?:пароль|password|pass)"
 _LABELED = re.compile(rf"^{_LOGIN}\s*[:=]?\s*(\S+)\s+{_PASSWORD}\s*[:=]?\s*(.+)$", re.I)
@@ -26,7 +37,9 @@ def _reject_link(text: str, line_number: int) -> None:
 def _credential(login: str, password: str, line_number: int) -> Credential:
     if not login or not password:
         raise AccountsFormatError(f"Строка {line_number}: логин или пароль пуст")
-    return Credential(login=login, password=password)
+    credential = Credential(login=login, password=password)
+    validate_credential(credential)
+    return credential
 
 
 def parse_account_line(line: str, line_number: int) -> Credential:
@@ -39,7 +52,7 @@ def parse_account_line(line: str, line_number: int) -> Credential:
     if labeled:
         login, password = labeled.groups()
     else:
-        separated = re.match(r"^([^\s:|;]+)\s*[:|;\t]\s*(.+)$", text)
+        separated = re.fullmatch(r"([^\s:|;]+)\s*[:|;\t]\s*(.+)", text)
         if separated:
             login, password = separated.groups()
         elif len(text.split()) == 2:
@@ -73,7 +86,13 @@ def parse_accounts_text(text: str) -> list[Credential]:
         if login_only:
             pending_login = login_only.group(1)
         else:
-            result.append(parse_account_line(line, number))
+            # A visual wrap in Telegram is not a newline. Only split a list when
+            # every whitespace-delimited token is an explicit login:password pair.
+            parts = line.split()
+            if len(parts) > 1 and all(re.fullmatch(r'[^\s:|;]+:[^\s]+', part) for part in parts):
+                result.extend(parse_account_line(part, number) for part in parts)
+            else:
+                result.append(parse_account_line(line, number))
     if pending_login is not None:
         raise AccountsFormatError("Для последнего логина не указан пароль")
     if not result:
@@ -87,10 +106,12 @@ def load_accounts(path: Path, *, allow_empty: bool = False) -> list[Credential]:
 
     credentials: list[Credential] = []
     fingerprints: set[str] = set()
-    for number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
-        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-            continue
-        credential = parse_account_line(raw_line, number)
+    text = path.read_text(encoding="utf-8-sig")
+    if not any(line.strip() and not line.lstrip().startswith('#') for line in text.splitlines()):
+        if allow_empty:
+            return []
+        raise AccountsFormatError("В файле аккаунтов нет ни одной записи")
+    for number, credential in enumerate(parse_accounts_text(text), 1):
         if credential.fingerprint in fingerprints:
             raise AccountsFormatError(f"Строка {number}: этот аккаунт уже указан выше")
         fingerprints.add(credential.fingerprint)

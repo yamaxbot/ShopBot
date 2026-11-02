@@ -5,8 +5,8 @@ import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import RefundStarPayment, SendMessage
-from aiogram.types import Message, Update
+from aiogram.methods import RefundStarPayment, SendMessage, GetStarTransactions
+from aiogram.types import Message, Update, StarTransactions
 
 from playerok_bot.errors import ConfigurationError
 from playerok_bot.telegram.billing import Billing
@@ -21,6 +21,7 @@ class Session(BaseSession):
         super().__init__()
         self.calls = []
         self.refund_result = True
+        self.transactions = []
 
     async def close(self):
         pass
@@ -30,6 +31,8 @@ class Session(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
+        if isinstance(method, GetStarTransactions):
+            return StarTransactions.model_validate({'transactions': self.transactions})
         if isinstance(method, RefundStarPayment):
             if isinstance(self.refund_result, BaseException):
                 raise self.refund_result
@@ -75,6 +78,9 @@ class Harness:
         return self.session.calls[-1].text
 
     def pay(self, charge, user_id, stars=35, days=7, ago=0, status='paid'):
+        self.session.transactions.append({'id': charge, 'amount': stars, 'date': 1,
+            'receiver': {'type': 'user', 'transaction_type': 'invoice_payment',
+                         'user': {'id': user_id, 'is_bot': False, 'first_name': 'Buyer'}}})
         with self.profiles.connection:
             cursor = self.profiles.connection.execute(
                 'INSERT INTO star_payments(charge_id,payload,user_id,stars,days,paid_at,status) VALUES (?,?,?,?,?,?,?)',
@@ -214,4 +220,21 @@ def test_refund_keeps_access_from_other_payments(tmp_path):
         assert 'После возврата: до' in preview
         assert 'Возврат выполнен' in await h.send(1, '/refund stx-b confirm')
         assert h.billing.active(3) and ('stop_all', 3) not in h.calls
+    run(tmp_path, scenario)
+
+
+def test_legacy_refund_requires_remote_recheck_and_no_false_success(tmp_path):
+    async def scenario(h):
+        payment_id = h.pay('legacy', 2, status='refunded')
+        h.session.transactions = []
+        assert 'требуется сверка' in await h.send(1, '/refund legacy')
+        result = await h.send(1, '/refund legacy confirm')
+        assert 'Возврат выполнен' not in result
+        assert 'журналом Telegram' in result
+        assert h.billing.payment(payment_id)['status'] == 'refund_pending'
+        h.session.transactions = [{'id': 'legacy', 'amount': 35, 'date': 1,
+            'receiver': {'type': 'user', 'transaction_type': 'invoice_payment',
+                         'user': {'id': 2, 'is_bot': False, 'first_name': 'Buyer'}}}]
+        assert 'Возврат выполнен' in await h.send(1, '/refund legacy confirm')
+        assert len([call for call in h.session.calls if isinstance(call, RefundStarPayment)]) == 1
     run(tmp_path, scenario)

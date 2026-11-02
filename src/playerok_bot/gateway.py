@@ -162,6 +162,8 @@ class PlayerokGateway:
         fields = list(getattr(item, "data_fields", None) or [])
         updated_fields = self.field_mapper.apply(fields, credential)
         self._require_account().update_item(id=self.item_id, data_fields=updated_fields)
+        if not self.delivery_matches(credential):
+            raise ListingValidationError('Playerok не подтвердил сохранение одного выбранного аккаунта; публикация остановлена')
 
     def delivery_matches(self, credential: Credential) -> bool:
         current = self.current_credential()
@@ -179,6 +181,8 @@ class PlayerokGateway:
 
     def publish_premium(self) -> int:
         item = self.get_listing()
+        if self.current_credential(item) is None:
+            raise ListingValidationError('Не удалось проверить единственный аккаунт перед публикацией')
         premium = self._premium_status(item)
         self._require_account().publish_item(item.id, premium.id)
         return int(premium.price)

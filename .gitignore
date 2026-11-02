@@ -8,6 +8,7 @@ __pycache__/
 data/
 logs/
 .research/
+dist/
 
 # Личный запас и материалы объявлений.
 accaunts.txt

@@ -46,6 +46,7 @@ def main():
                 from ..funpay.service import FunPayService
                 storage = Storage(Path(os.environ['DATABASE_PATH']))
                 try:
+                    storage.validate_inventory()
                     record_stage("FunPay: проверка лотов и автовыдачи")
                     snapshots = FunPayService(storage, funpay, json.loads(os.environ['FUNPAY_LOTS'])).check()
                     record_stage("FunPay: проверка раздела для поднятия")

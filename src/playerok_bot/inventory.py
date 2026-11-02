@@ -101,6 +101,9 @@ class Inventory:
 
     def snapshot(self, lot_id: str, credentials: list[Credential], active: bool):
         """Резервировать фактически присутствующий товар. Пропавшее — в карантин."""
+        from .accounts import validate_credential
+        for credential in credentials:
+            validate_credential(credential)
         if self.storage.ownership:
             self.storage.ownership.claim_lots('funpay', [lot_id])
             self.storage.ownership.claim_accounts(credentials)

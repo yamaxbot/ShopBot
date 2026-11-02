@@ -7,6 +7,14 @@ from playerok_bot.errors import ConfigurationError
 from playerok_bot.telegram.profiles import Profiles
 from playerok_bot.telegram.billing import Billing
 from playerok_bot.telegram.workers import Workers
+from aiogram.types import StarTransactions
+
+
+def refund_transactions(charge='charge', amount=100):
+    return StarTransactions.model_validate({'transactions': [{
+        'id': charge, 'amount': amount, 'date': 1,
+        'receiver': {'type': 'user', 'transaction_type': 'invoice_payment',
+                     'user': {'id': 2, 'is_bot': False, 'first_name': 'Buyer'}}}]})
 
 
 def payment(payload, charge='charge', amount=100):
@@ -44,7 +52,8 @@ def test_billing_validation_idempotency_renewal_refund_and_restart(tmp_path, mon
     profiles.close()
     profiles = Profiles(tmp_path)
     billing = Billing(profiles,frozenset({1}))
-    bot = SimpleNamespace(refund_star_payment=AsyncMock(return_value=True))
+    bot = SimpleNamespace(refund_star_payment=AsyncMock(return_value=True),
+                          get_star_transactions=AsyncMock(return_value=refund_transactions()))
     asyncio.run(billing.refund(bot,1,first))
     assert billing.until(2) == clock[0]+10*86400
     asyncio.run(billing.refund(bot,1,first))
@@ -69,6 +78,7 @@ def test_invoice_price_is_frozen_and_pending_refund_can_retry(tmp_path, monkeypa
     assert billing.payment(pid)['status'] == 'refund_pending'
     assert not billing.active(2)
     bot.refund_star_payment = AsyncMock(return_value=True)
+    bot.get_star_transactions = AsyncMock(return_value=refund_transactions())
     asyncio.run(billing.refund(bot,1,pid))
     assert billing.payment(pid)['status'] == 'refunded'
     profiles.close()

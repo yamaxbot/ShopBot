@@ -45,6 +45,7 @@ def _run_once():
         if sig is not None:
             previous[sig] = signal.signal(sig, lambda *_: stop.set())
     try:
+        storage.validate_inventory()
         has_playerok = bool(os.environ.get('PLAYEROK_ITEM'))
         lot_ids = json.loads(os.environ.get('FUNPAY_LOTS', '[]'))
         if not has_playerok and not lot_ids:

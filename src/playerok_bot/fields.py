@@ -52,14 +52,19 @@ class DeliveryFieldMapper:
             "combined": None,
         }
         for field in fields:
+            role = None
             if _matches(field.label, self.overrides.login, self.LOGIN_KEYWORDS):
-                result["login"] = field
+                role = 'login'
             elif _matches(field.label, self.overrides.password, self.PASSWORD_KEYWORDS):
-                result["password"] = field
+                role = 'password'
             elif _matches(field.label, self.overrides.comment, self.COMMENT_KEYWORDS):
-                result["comment"] = field
+                role = 'comment'
             elif _matches(field.label, self.overrides.combined, self.COMBINED_KEYWORDS):
-                result["combined"] = field
+                role = 'combined'
+            if role:
+                if result[role] is not None:
+                    raise FieldMappingError('Неоднозначные поля выдачи: несколько полей одного типа. Укажите точные подписи полей.')
+                result[role] = field
         return result
 
     def validate(self, fields: list[DataField]) -> None:
@@ -78,6 +83,8 @@ class DeliveryFieldMapper:
             )
 
     def apply(self, fields: list[DataField], credential: Credential) -> list[DataField]:
+        from .accounts import validate_credential
+        validate_credential(credential)
         self.validate(fields)
         mapping = self._classify(fields)
         if mapping["login"] is not None and mapping["password"] is not None:
@@ -85,6 +92,8 @@ class DeliveryFieldMapper:
             mapping["password"].value = credential.password
             if mapping["comment"] is not None:
                 mapping["comment"].value = self.comment
+            if mapping['combined'] is not None:
+                mapping['combined'].value = ''
         else:
             mapping["combined"].value = (
                 f"Логин: {credential.login}\n"
@@ -96,9 +105,16 @@ class DeliveryFieldMapper:
     def extract(self, fields: list[DataField]) -> Credential | None:
         mapping = self._classify(fields)
         if mapping["login"] is not None and mapping["password"] is not None:
+            if mapping['combined'] is not None and (mapping['combined'].value or '').strip():
+                raise FieldMappingError('В лоте заполнены и отдельные, и общие данные аккаунта. Очистите общее поле перед запуском.')
             login = (mapping["login"].value or "").strip()
             password = (mapping["password"].value or "").strip()
-            return Credential(login, password) if login and password else None
+            if not login or not password:
+                return None
+            from .accounts import validate_credential
+            credential = Credential(login, password)
+            validate_credential(credential)
+            return credential
 
         combined = mapping["combined"]
         if combined is None or not combined.value:
@@ -109,5 +125,10 @@ class DeliveryFieldMapper:
         )
         if not login_match or not password_match:
             return None
-        return Credential(login_match.group(1), password_match.group(1))
+        if len(re.findall(r'(?im)^\s*(?:логин|login)\s*[:=]', combined.value)) != 1 or len(re.findall(r'(?im)^\s*(?:пароль|password)\s*[:=]', combined.value)) != 1:
+            raise FieldMappingError('В данных выдачи найдено несколько аккаунтов. Исправьте лот вручную.')
+        from .accounts import validate_credential
+        credential = Credential(login_match.group(1), password_match.group(1))
+        validate_credential(credential)
+        return credential
 

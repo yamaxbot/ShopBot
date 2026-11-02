@@ -39,6 +39,7 @@ def _migrate(user_id: int, root: Path, host: TelegramSettings):
             finally:
                 con.close()
         candidate = Profile(user_id, profile.playerok_id, False, profile.last_notified, {
+            **Profiles.defaults(),
             "cookies": legacy.cookies, "user_agent": legacy.user_agent,
             "items": list(legacy.item_references), "price_limit": legacy.premium_price_limit_rub,
             "bump": legacy.auto_bump_enabled,

@@ -60,6 +60,7 @@ class BotApplication:
         return inserted
 
     def prepare(self, progress: Callable[[str], None] | None = None) -> list[ListingInfo]:
+        self.storage.validate_inventory()
         report = progress or (lambda stage: None)
         report("Playerok: импорт локального запаса")
         self.import_accounts_from_file()

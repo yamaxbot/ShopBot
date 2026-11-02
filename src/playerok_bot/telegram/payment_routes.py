@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 STATUSES = {'paid': 'оплачен', 'refund_pending': 'возврат ожидает подтверждения', 'refunded': 'возвращён'}
 
 
+def payment_status(row):
+    if row['status'] == 'refunded' and not row['refund_verified']:
+        return 'старый возврат: требуется сверка с Telegram'
+    return STATUSES.get(row['status'], 'требует сверки')
+
+
 def _moment(stamp):
     return datetime.fromtimestamp(stamp, MSK).strftime('%d.%m.%Y %H:%M МСК')
 
@@ -150,9 +156,9 @@ def register_payments(router, billing, workers, settings):
                 user_id = int(command.args or '0')
                 if user_id <= 0:
                     raise ValueError()
-            rows = billing.db.execute('SELECT id,charge_id,stars,days,paid_at,status FROM star_payments WHERE user_id=? ORDER BY id DESC LIMIT 30', (user_id,)).fetchall()
+            rows = billing.db.execute('SELECT id,charge_id,stars,days,paid_at,status,refund_verified FROM star_payments WHERE user_id=? ORDER BY id DESC LIMIT 30', (user_id,)).fetchall()
             text = '\n\n'.join(f"№{r['id']} · {r['stars']} Stars · {days_text(r['days'])} · {_moment(r['paid_at'])}\n"
-                               f"{STATUSES.get(r['status'], 'требует сверки')}\nID операции: {r['charge_id']}" for r in rows)
+                               f"{payment_status(r)}\nID операции: {r['charge_id']}" for r in rows)
             footer = ('\n\nВозврат: /refund ID_ОПЕРАЦИИ' if command.command == 'admin_payments'
                       else '\n\nВопрос по платежу: /paysupport — укажите ID операции.')
             await message.answer(('🧾 Последние платежи\n\n' + (text or 'Платежей пока нет. Оплатить доступ: /subscribe'))[:3900] + footer)
@@ -207,8 +213,8 @@ def register_payments(router, billing, workers, settings):
         user_id, charge = row['user_id'], row['charge_id']
         details = (f"💸 Возврат Stars\n\nID операции: {charge}\nПлатёж №{row['id']} · пользователь {user_id}\n"
                    f"{row['stars']} Stars · {days_text(row['days'])} · {_moment(row['paid_at'])}\n"
-                   f"Статус: {STATUSES.get(row['status'], 'требует сверки')}")
-        if row['status'] == 'refunded':
+                   f"Статус: {payment_status(row)}")
+        if row['status'] == 'refunded' and row['refund_verified']:
             await message.answer(details + '\n\nЭтот платёж уже возвращён.')
             return
         if len(parts) == 1:
@@ -231,7 +237,7 @@ def register_payments(router, billing, workers, settings):
             await workers.stop_all(user_id)
         await message.answer(f"✅ Возврат выполнен: {row['stars']} Stars пользователю {user_id}.\n"
                              f"Доступ пользователя: {_access(billing.until(user_id))}.\n"
-                             'Telegram пришлёт пользователю уведомление о возврате.')
+                             'Возврат подтверждён журналом операций Telegram Stars.')
 
     @router.message(Command('admin_stats'))
     async def admin_stats(message: Message):

@@ -44,6 +44,16 @@ class Storage:
         with self._lock:
             self._connection.close()
 
+    def validate_inventory(self) -> None:
+        from .accounts import validate_credential
+        from .errors import AccountsFormatError
+        with self._lock:
+            for row in self._connection.execute("SELECT id,login,password FROM accounts WHERE status!='sold'"):
+                try:
+                    validate_credential(Credential(row['login'], row['password']))
+                except AccountsFormatError:
+                    raise StorageError(f"Запись склада №{row['id']} содержит небезопасные данные. Обслуживание заблокировано. Нужна ручная сверка; не импортируйте этот список повторно.") from None
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -145,6 +155,8 @@ class Storage:
     def _account(row: sqlite3.Row | None) -> StoredAccount | None:
         if row is None:
             return None
+        from .accounts import validate_credential
+        validate_credential(Credential(row['login'], row['password']))
         return StoredAccount(
             id=row["id"],
             fingerprint=row["fingerprint"],
@@ -175,6 +187,9 @@ class Storage:
         )
 
     def import_accounts(self, credentials: list[Credential]) -> int:
+        from .accounts import validate_credential
+        for credential in credentials:
+            validate_credential(credential)
         if self.ownership:
             self.ownership.claim_accounts(credentials)
         inserted = 0
@@ -203,6 +218,8 @@ class Storage:
         return inserted
 
     def bootstrap_listing(self, item_id: str, credential: Credential) -> StoredAccount:
+        from .accounts import validate_credential
+        validate_credential(credential)
         with self._transaction() as connection:
             existing = connection.execute(
                 "SELECT * FROM accounts WHERE status = 'listed' AND listed_item_id = ?",

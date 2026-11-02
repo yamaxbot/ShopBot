@@ -60,6 +60,9 @@ def parse_lots(text: str) -> list[str]:
 
 def format_secrets(credentials: list[Credential]) -> str:
     """Один аккаунт FunPay — одна строка встроенной автовыдачи."""
+    from ..accounts import validate_credential
+    for credential in credentials:
+        validate_credential(credential)
     return '\n'.join(f'Логин: {c.login} Пароль: {c.password}' for c in credentials)
 
 

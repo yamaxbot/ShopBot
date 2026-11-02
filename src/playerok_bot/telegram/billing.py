@@ -38,6 +38,12 @@ class Billing:
             CREATE TABLE IF NOT EXISTS billing_audit (
                 id INTEGER PRIMARY KEY, admin_id INTEGER, action TEXT, detail TEXT, created_at INTEGER);
         """)
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(star_payments)')}
+        for name, declaration in (('refund_verified', 'TEXT'), ('refund_api_accepted', 'INTEGER NOT NULL DEFAULT 0'),
+                                  ('refund_scan_offset', 'INTEGER NOT NULL DEFAULT 0')):
+            if name not in columns:
+                self.db.execute(f'ALTER TABLE star_payments ADD COLUMN {name} {declaration}')
+        self.db.commit()
         # Таблица прежнего единственного тарифа (billing_plan) больше не используется.
         # Тарифы по умолчанию добавляются один раз: удалённые администратором не возвращаются.
         if fresh:
@@ -161,31 +167,58 @@ class Billing:
     async def refund(self, bot, admin_id, payment_id):
         self.require_admin(admin_id)
         row = self.payment(payment_id)
-        if row['status'] == 'refunded':
+        if row['status'] == 'refunded' and row['refund_verified']:
             return row['user_id']
         with self.db:
             self.db.execute("UPDATE star_payments SET status='refund_pending' WHERE id=?", (payment_id,))
             self.audit(admin_id, 'refund_requested', payment_id)
         # Повтор после сетевой ошибки использует тот же charge_id, без нового платежа.
         from aiogram.exceptions import TelegramBadRequest
-        try:
-            result = await bot.refund_star_payment(user_id=row['user_id'], telegram_payment_charge_id=row['charge_id'])
-            if result is not True:
-                raise ConfigurationError('Возврат не подтверждён. Повторите /refund для этого платежа.')
-        except TelegramBadRequest as exc:
-            if 'CHARGE_ALREADY_REFUNDED' not in str(exc).upper():
-                raise ConfigurationError('Telegram не подтвердил возврат. Платёж сохранён для повторной сверки.') from None
+        if not row['refund_api_accepted']:
+            try:
+                result = await bot.refund_star_payment(user_id=row['user_id'], telegram_payment_charge_id=row['charge_id'])
+                if result is not True:
+                    raise ConfigurationError('Возврат не подтверждён. Повторите /refund для этого платежа.')
+            except TelegramBadRequest as exc:
+                if exc.message.removeprefix('Bad Request: ').strip().upper() != 'CHARGE_ALREADY_REFUNDED':
+                    raise ConfigurationError('Telegram не подтвердил возврат. Платёж сохранён для повторной сверки.') from None
+            with self.db:
+                self.db.execute('UPDATE star_payments SET refund_api_accepted=1 WHERE id=?', (payment_id,))
+        # A legacy local status is not proof. Match the outgoing transaction,
+        # never the incoming payment with the same charge ID.
+        offset = row['refund_scan_offset']
+        confirmed = False
+        for _ in range(10):
+            page = await bot.get_star_transactions(offset=offset, limit=100)
+            for transaction in page.transactions:
+                receiver = transaction.receiver
+                if (transaction.id == row['charge_id'] and transaction.amount == row['stars']
+                        and not transaction.nanostar_amount and receiver is not None
+                        and receiver.type == 'user' and receiver.user.id == row['user_id']
+                        and receiver.transaction_type == 'invoice_payment'
+                        and (receiver.invoice_payload is None or receiver.invoice_payload == row['payload'])):
+                    confirmed = True
+                    break
+            if confirmed:
+                break
+            offset = offset + len(page.transactions) if len(page.transactions) == 100 else 0
+            with self.db:
+                self.db.execute('UPDATE star_payments SET refund_scan_offset=? WHERE id=?', (offset, payment_id))
+            if offset == 0:
+                break
+        if not confirmed:
+            raise ConfigurationError('Запрос возврата принят, но исходящая операция Stars ещё не подтверждена журналом Telegram. Повторите /refund ID_ОПЕРАЦИИ confirm для сверки.')
         with self.db:
-            self.db.execute("UPDATE star_payments SET status='refunded' WHERE id=?", (payment_id,))
+            self.db.execute("UPDATE star_payments SET status='refunded',refund_verified='transactions' WHERE id=?", (payment_id,))
             self.audit(admin_id, 'refunded', payment_id)
         return row['user_id']
 
     def refunded(self, user_id, payment):
         row = self.db.execute('SELECT * FROM star_payments WHERE charge_id=?', (payment.telegram_payment_charge_id,)).fetchone()
-        if not row or row['user_id'] != user_id or row['stars'] != payment.total_amount or payment.currency != 'XTR':
+        if not row or row['user_id'] != user_id or row['stars'] != payment.total_amount or payment.currency != 'XTR' or row['payload'] != payment.invoice_payload:
             raise ConfigurationError('Неизвестный возврат: обратитесь в /paysupport.')
         with self.db:
-            self.db.execute("UPDATE star_payments SET status='refunded' WHERE id=?", (row['id'],))
+            self.db.execute("UPDATE star_payments SET status='refunded',refund_verified='telegram_update' WHERE id=?", (row['id'],))
 
 
 class SubscriptionAccess(BaseMiddleware):
